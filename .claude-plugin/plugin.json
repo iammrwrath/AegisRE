@@ -1,0 +1,28 @@
+{
+  "name": "aegis",
+  "version": "1.0.0",
+  "description": "AegisRE: Reverse engineer anything with agents, from app behavior down to native binaries.",
+  "author": {
+    "name": "Aegis Project"
+  },
+  "homepage": "https://github.com/aegis-re",
+  "repository": "https://github.com/aegis-re",
+  "license": "MIT",
+  "keywords": [
+    "reverse-engineering",
+    "binary-analysis",
+    "decompiler",
+    "mcp-server"
+  ],
+  "skills": "./skills",
+  "mcpServers": {
+    "rea": {
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/scripts/plugin-mcp-launcher.mjs",
+        "1.0.0"
+      ]
+    }
+  },
+  "icon": "./assets/aegis-logo.svg"
+}
