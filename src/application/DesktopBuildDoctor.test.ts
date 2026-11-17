@@ -123,7 +123,7 @@ describe("desktop build host checks", () => {
 
   it("reuses the Node.js runtime check", async () => {
     const check = await failed(
-      buildHost({}, { runtime: { id: "node", version: "20.11.0" } }),
+      buildHost({}, { runtime: { id: "node", version: "18.19.0" } }),
       "desktop_build-node",
     );
     expect(check.classification).toBe("missing_dependency");
