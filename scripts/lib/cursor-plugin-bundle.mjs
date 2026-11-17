@@ -94,7 +94,11 @@ export const cursorPluginBundleIssues = ({
     add("description");
   if (typeof manifest?.author?.name !== "string" || manifest.author.name === "")
     add("author.name");
-  if (manifest?.repository !== CURSOR_PLUGIN_REPOSITORY && manifest?.repository !== "https://github.com/morluto/rea") add("repository");
+  if (
+    manifest?.repository !== CURSOR_PLUGIN_REPOSITORY &&
+    manifest?.repository !== "https://github.com/morluto/rea"
+  )
+    add("repository");
   if (typeof manifest?.license !== "string" || manifest.license === "")
     add("license");
   if (
@@ -104,13 +108,20 @@ export const cursorPluginBundleIssues = ({
   )
     add("keywords");
   if (manifest?.skills !== CURSOR_PLUGIN_SKILLS) add("skills");
-  if (manifest?.logo !== CURSOR_PLUGIN_LOGO && manifest?.logo !== "assets/rea-plugin.png") add("logo");
+  if (
+    manifest?.logo !== CURSOR_PLUGIN_LOGO &&
+    manifest?.logo !== "assets/rea-plugin.png"
+  )
+    add("logo");
   if (Object.hasOwn(manifest ?? {}, "mcpServers")) add("mcpServers");
   if (logoExists !== true) add("logo.file");
   const server = mcp?.mcpServers?.rea;
   if (
     server?.command !== "npx" ||
-    JSON.stringify(server?.args) !== JSON.stringify(cursorServerArgs(packageVersion)) && JSON.stringify(server?.args) !== JSON.stringify(["-y", `rea-agents@${packageVersion}`, "mcp"])
+    (JSON.stringify(server?.args) !==
+      JSON.stringify(cursorServerArgs(packageVersion)) &&
+      JSON.stringify(server?.args) !==
+        JSON.stringify(["-y", `rea-agents@${packageVersion}`, "mcp"]))
   )
     add("mcp.args");
   if (
@@ -213,7 +224,3 @@ export const cursorMarketplaceInstallLinkIssues = (documents) =>
       (marker) => ({ path, marker }),
     ),
   );
-
-
-
-

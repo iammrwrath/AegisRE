@@ -4,8 +4,7 @@ import { satisfies } from "semver";
 export const SUPPORTED_NODE_VERSION_RANGE = ">=20.0.0";
 
 /** Human-readable form of {@link SUPPORTED_NODE_VERSION_RANGE} for remediation. */
-export const SUPPORTED_NODE_VERSION_PROSE =
-  "Node.js 20.0.0+";
+export const SUPPORTED_NODE_VERSION_PROSE = "Node.js 20.0.0+";
 
 /** Return whether a Node.js version satisfies REA's tested runtime families. */
 export const supportsNodeVersion = (version: string): boolean =>

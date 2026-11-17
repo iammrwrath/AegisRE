@@ -6,7 +6,7 @@
 
 **Next-Generation Reverse Engineering Engine & Autonomous Agent Protocol**
 
-*Analyze binaries, reconstruct application graphs, and bridge decompilers directly into AI agent workflows.*
+_Analyze binaries, reconstruct application graphs, and bridge decompilers directly into AI agent workflows._
 
 [![Release](https://img.shields.io/github/v/release/iammrwrath/AegisRE?color=06B6D4&label=Release)](https://github.com/iammrwrath/AegisRE/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-6366F1.svg)](LICENSE)
@@ -36,9 +36,9 @@ Pre-compiled, zero-dependency release packages are available on the **[Releases 
 
 ### Windows x64
 
-| Package | Type | Description |
-|---|---|---|
-| **[AegisRE-Setup-v1.0.0-win-x64.exe](https://github.com/iammrwrath/AegisRE/releases/download/v1.0.0/AegisRE-Setup-v1.0.0-win-x64.exe)** | **Installer** | Standard Windows setup wizard with Start Menu & Desktop shortcuts, uninstaller, and automatic system `PATH` registration. |
+| Package                                                                                                                                       | Type             | Description                                                                                                                      |
+| --------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| **[AegisRE-Setup-v1.0.0-win-x64.exe](https://github.com/iammrwrath/AegisRE/releases/download/v1.0.0/AegisRE-Setup-v1.0.0-win-x64.exe)**       | **Installer**    | Standard Windows setup wizard with Start Menu & Desktop shortcuts, uninstaller, and automatic system `PATH` registration.        |
 | **[AegisRE-Portable-v1.0.0-win-x64.zip](https://github.com/iammrwrath/AegisRE/releases/download/v1.0.0/AegisRE-Portable-v1.0.0-win-x64.zip)** | **Portable ZIP** | Completely self-contained archive with bundled runtime and native accelerator. Extract anywhere and launch `aegis.exe` directly. |
 
 ---
@@ -60,6 +60,7 @@ Pre-compiled, zero-dependency release packages are available on the **[Releases 
 ## 🚀 Quickstart
 
 ### 1. Verify Installation
+
 ```bash
 # Check version
 aegis --version
@@ -69,19 +70,25 @@ aegis capabilities
 ```
 
 ### 2. Inspect a Native Binary
+
 Analyze headers, architecture, signatures, and sections of an executable:
+
 ```bash
 aegis inspect-artifact "path/to/target.exe" --format json
 ```
 
 ### 3. Reconstruct an Electron or JavaScript Application
+
 Reconstruct IPC boundaries, routes, and hidden modules directly from an ASAR package or folder:
+
 ```bash
 aegis analyze-javascript-application "path/to/app.asar"
 ```
 
 ### 4. Search and Cross-Reference
+
 Search strings, symbols, or trace call references across targets:
+
 ```bash
 aegis search "api_secret_key"
 aegis xrefs 0x140001000
@@ -94,6 +101,7 @@ aegis xrefs 0x140001000
 AegisRE exposes 250+ reverse engineering tools directly to Large Language Models and AI coding assistants via MCP over stdio.
 
 ### Claude Desktop Configuration
+
 Add AegisRE to your `claude_desktop_config.json`:
 
 ```json
@@ -108,6 +116,7 @@ Add AegisRE to your `claude_desktop_config.json`:
 ```
 
 ### Cursor / Codex / Windsurf
+
 ```json
 {
   "mcpServers": {
@@ -125,14 +134,14 @@ Once connected, your AI assistant can inspect binaries, navigate decompiled code
 
 ## 🛠️ CLI Reference
 
-| Command Family | Operations |
-|---|---|
-| **Artifact Inspection** | `inspect-artifact`, `audit-release-exposure`, `compare-artifacts` |
-| **JavaScript & Web** | `analyze-javascript-application`, `analyze-web-bundle`, `recover-javascript-sources` |
-| **Native Analysis** | `decompile`, `search-bytes`, `read-bytes`, `xrefs`, `resolve-native-call-targets` |
-| **Managed (.NET)** | `inspect-managed-artifact`, `inspect-managed-members`, `verify-managed-native-boundaries` |
-| **Android / Mobile** | `decode-android-resources`, `search-android-classes`, `trace-android-references` |
-| **Environment / MCP** | `capabilities`, `setup`, `mcp`, `doctor` |
+| Command Family          | Operations                                                                                |
+| ----------------------- | ----------------------------------------------------------------------------------------- |
+| **Artifact Inspection** | `inspect-artifact`, `audit-release-exposure`, `compare-artifacts`                         |
+| **JavaScript & Web**    | `analyze-javascript-application`, `analyze-web-bundle`, `recover-javascript-sources`      |
+| **Native Analysis**     | `decompile`, `search-bytes`, `read-bytes`, `xrefs`, `resolve-native-call-targets`         |
+| **Managed (.NET)**      | `inspect-managed-artifact`, `inspect-managed-members`, `verify-managed-native-boundaries` |
+| **Android / Mobile**    | `decode-android-resources`, `search-android-classes`, `trace-android-references`          |
+| **Environment / MCP**   | `capabilities`, `setup`, `mcp`, `doctor`                                                  |
 
 Run `aegis --help` or `aegis <command> --help` for full parameter options.
 
@@ -158,6 +167,7 @@ npm run test:fast
 ```
 
 To compile the Windows installer, open `installer.iss` in Inno Setup 6 or run:
+
 ```bash
 iscc installer.iss
 ```

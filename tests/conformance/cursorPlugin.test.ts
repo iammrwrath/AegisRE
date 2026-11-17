@@ -142,4 +142,3 @@ describe("Cursor Marketplace plugin", () => {
     ).rejects.toMatchObject({ code: "cursor_plugin_skill_inventory" });
   });
 });
-
