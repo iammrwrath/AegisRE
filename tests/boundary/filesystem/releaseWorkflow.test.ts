@@ -102,7 +102,7 @@ it("validates the source before release creation and the prepared candidate befo
 
 it("keeps main pushes proposal-only and gates merged-release automation", async () => {
   const workflow = await readReleaseWorkflow();
-  expect(workflow.on.push).toEqual({ branches: ["main"] });
+  expect(workflow.on.push).toBeUndefined();
   expect(workflow.on.pull_request).toMatchObject({
     types: ["closed"],
     branches: ["main"],
