@@ -30,14 +30,14 @@ describe("version report", () => {
   it("judges Bun by its Node.js compatibility version", () => {
     const report = versionReport({
       ...host,
-      versions: { node: "18.19.0", bun: "1.4.2" },
+      versions: { node: "24.18.0", bun: "1.4.2" },
     });
 
     expect(versionReportSchema.parse(report)).toMatchObject({
       runtime: {
         id: "bun",
         version: "1.4.2",
-        node_compatibility_version: "18.19.0",
+        node_compatibility_version: "24.18.0",
       },
       supported_runtime: { satisfied: false },
     });

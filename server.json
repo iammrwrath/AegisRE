@@ -1,6 +1,6 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.aegis/aegis-re",
+  "name": "io.github.morluto/rea",
   "title": "REA",
   "description": "Reverse engineer anything from your terminal or agent with one CLI and MCP server.",
   "websiteUrl": "https://github.com/morluto/rea",
@@ -13,7 +13,7 @@
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
-      "identifier": "aegis-re",
+      "identifier": "rea-agents",
       "version": "1.0.0",
       "runtimeHint": "npx",
       "transport": {

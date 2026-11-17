@@ -120,8 +120,8 @@ describe("release configuration", () => {
           example,
         ).toHaveLength(1);
       for (const block of versionBlocks)
-        expect(new Set(block.match(/aegis-re@[^\s"`]+/gu))).toEqual(
-          new Set([`aegis-re@${packageJson.version}`]),
+        expect(new Set(block.match(/rea-agents@[^\s"`]+/gu))).toEqual(
+          new Set([`rea-agents@${packageJson.version}`]),
         );
     },
   );
@@ -210,7 +210,7 @@ describe("plugin manifests", () => {
           {
             source: {
               source: "npm",
-              package: "aegis-re",
+              package: "rea-agents",
               version: pkg.version,
             },
           },
@@ -248,7 +248,7 @@ describe("Cursor Marketplace release pin", () => {
       mcpServers: {
         rea: {
           command: "npx",
-          args: ["-y", `aegis-re@${packageJson.version}`, "mcp"],
+          args: ["-y", `rea-agents@${packageJson.version}`, "mcp"],
         },
       },
     });
@@ -325,7 +325,7 @@ describe("plugin release pins", () => {
       mcpServers: {
         rea: {
           command: "npx",
-          args: ["-y", `aegis-re@${nextVersion}`, "mcp"],
+          args: ["-y", `rea-agents@${nextVersion}`, "mcp"],
         },
       },
     });
@@ -338,7 +338,7 @@ describe("plugin release pins", () => {
           {
             source: {
               source: "npm",
-              package: "aegis-re",
+              package: "rea-agents",
               version: nextVersion,
             },
           },

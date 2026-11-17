@@ -1,6 +1,6 @@
 {
-  "name": "aegis-re",
-  "mcpName": "io.github.aegis/aegis-re",
+  "name": "rea-agents",
+  "mcpName": "io.github.morluto/rea",
   "version": "1.0.0",
   "description": "AegisRE: Reverse engineer anything from your terminal or agent with one CLI and MCP server.",
   "license": "MIT",
@@ -31,13 +31,11 @@
     "#web-bundle-analysis-worker": "./dist/composition/webBundleAnalysisWorkerProcess.js"
   },
   "bin": {
-    "aegis": "scripts/rea.mjs",
-    "aegis-re": "scripts/rea.mjs",
     "rea": "scripts/rea.mjs",
     "rea-agents": "scripts/rea.mjs"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": "^22.23.4 || ^24.22.1 || >=26.12.1"
   },
   "packageManager": "npm@11.16.0",
   "files": [

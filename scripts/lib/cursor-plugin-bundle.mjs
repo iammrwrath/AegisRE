@@ -24,7 +24,7 @@ const failure = (code, detail) => {
   return error;
 };
 
-const cursorServerArgs = (version) => ["-y", `aegis-re@${version}`, "mcp"];
+const cursorServerArgs = (version) => ["-y", `rea-agents@${version}`, "mcp"];
 
 /** Relative file inventory for one skill directory, in stable order. */
 export const cursorPluginSkillPaths = async (directory, prefix = "") => {

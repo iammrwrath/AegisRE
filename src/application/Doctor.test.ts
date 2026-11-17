@@ -445,10 +445,10 @@ describe("doctor MCP startup readiness", () => {
 });
 
 describe("doctor runtime check", () => {
-  it("reports Node 18 as unsupported", async () => {
+  it("reports Node 25 as unsupported", async () => {
     const result = await runDoctor(
       undefined,
-      host({ runtime: { id: "node", version: "18.19.0" } }),
+      host({ runtime: { id: "node", version: "25.1.0" } }),
     );
 
     expect(result.healthy).toBe(false);
@@ -456,8 +456,8 @@ describe("doctor runtime check", () => {
       expect.objectContaining({
         name: "node",
         ok: false,
-        detail: "18.19.0",
-        details: { runtime: "node", version: "18.19.0" },
+        detail: "25.1.0",
+        details: { runtime: "node", version: "25.1.0" },
         classification: "missing_dependency",
       }),
     );
@@ -465,8 +465,8 @@ describe("doctor runtime check", () => {
 
   it.each([
     { compatibility: "26.12.1", ok: true },
-    { compatibility: "20.0.0", ok: true },
-    { compatibility: "18.19.0", ok: false },
+    { compatibility: "26.12.0", ok: false },
+    { compatibility: "25.1.0", ok: false },
   ])(
     "identifies Bun and admits it by Node.js compatibility $compatibility",
     async ({ compatibility, ok }) => {
@@ -539,7 +539,7 @@ describe("doctor", () => {
     const result = await runDoctor(
       "/missing/app",
       host({
-        runtime: { id: "node", version: "18.19.0" },
+        runtime: { id: "node", version: "20.0.0" },
         macosVersion: () => Promise.resolve("11.7"),
         executable: () => Promise.resolve(false),
         validTarget: () => Promise.resolve(false),

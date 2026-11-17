@@ -31,7 +31,7 @@ describe("Cursor Marketplace plugin", () => {
     expect(inspected.packageVersion).toBe(inspected.manifest.version);
     expect(inspected.mcp.mcpServers.rea).toEqual({
       command: "npx",
-      args: ["-y", `aegis-re@${inspected.packageVersion}`, "mcp"],
+      args: ["-y", `rea-agents@${inspected.packageVersion}`, "mcp"],
     });
   });
 

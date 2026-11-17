@@ -12,7 +12,7 @@
       "description": "Reverse engineer anything with agents, from app behavior down to native binaries.",
       "source": {
         "source": "npm",
-        "package": "aegis-re",
+        "package": "rea-agents",
         "version": "1.0.0"
       },
       "category": "development"

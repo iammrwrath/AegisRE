@@ -8,7 +8,7 @@
       "name": "aegis",
       "source": {
         "source": "npm",
-        "package": "aegis-re",
+        "package": "rea-agents",
         "version": "1.0.0"
       },
       "policy": {
