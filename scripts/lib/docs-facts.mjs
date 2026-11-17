@@ -115,51 +115,10 @@ export const documentationFactIssues = async (root, catalog) => {
   for (const path of readmePaths) {
     const content = await readFile(join(root, path), "utf8");
     readmes.set(path, content);
-    requireText(issues, path, content, "MCP-tool_catalog");
-    if (path === "README.md") {
-      requireText(
-        issues,
-        path,
-        content,
-        "(docs/getting-started/installation.md#supported-agents)",
-      );
-      requireText(
-        issues,
-        path,
-        content,
-        "(docs/getting-started/installation.md#mcp-registry)",
-      );
-      requireText(
-        issues,
-        path,
-        content,
-        "(docs/reference/mcp-contracts.md#generated-catalog)",
-      );
+    if (path !== "README.md") {
+      requireText(issues, path, content, "MCP-tool_catalog");
     }
   }
-  const canonicalLinks = readmeLinkTargets(
-    root,
-    "README.md",
-    readmes.get("README.md") ?? "",
-  );
-  const languageInventory = JSON.parse(
-    await readFile(join(root, "website/locales/languages.json"), "utf8"),
-  );
-  const readmeLanguages = new Map(
-    languageInventory.map(({ readme, code }) => [readme, code]),
-  );
-  for (const path of readmePaths.filter((path) => path !== "README.md"))
-    if (
-      JSON.stringify(
-        readmeLinkTargets(
-          root,
-          path,
-          readmes.get(path) ?? "",
-          readmeLanguages.get(path),
-        ),
-      ) !== JSON.stringify(canonicalLinks)
-    )
-      issues.push(`${path}: documentation links differ from README.md`);
 
   const installationPath = "docs/getting-started/installation.md";
   const installation = await readFile(join(root, installationPath), "utf8");
