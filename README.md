@@ -13,6 +13,7 @@ _Analyze binaries, reconstruct application graphs, and bridge decompilers direct
 [![Platform](https://img.shields.io/badge/Platform-Windows%20x64%20%7C%20Linux%20%7C%20macOS-blue)](https://github.com/iammrwrath/AegisRE/releases)
 
 [Downloads](#-downloads--installation) •
+[Desktop GUI Studio](#-aegisre-desktop-gui-studio) •
 [Features](#-key-features) •
 [Quickstart](#-quickstart) •
 [MCP Server Integration](#-mcp-server-for-ai-agents) •
@@ -24,9 +25,22 @@ _Analyze binaries, reconstruct application graphs, and bridge decompilers direct
 
 ## 🛡️ Overview
 
-**AegisRE** is a standalone, agent-ready reverse engineering platform that provides unified static inspection, deep decompilation, application reconstruction, and cryptographic Evidence tracking through a single CLI and Model Context Protocol (MCP) server.
+**AegisRE** is a standalone, agent-ready reverse engineering platform that provides unified static inspection, deep decompilation, application reconstruction, and cryptographic Evidence tracking through a modern **Desktop GUI Studio**, a high-performance **CLI**, and a standard **Model Context Protocol (MCP)** server.
 
 Built for both human security analysts and autonomous AI coding agents, AegisRE unifies native binary analysis (PE, ELF, Mach-O), managed .NET assemblies, Electron/JavaScript bundles, Android packages, and bridge connectors (Ghidra, IDA Pro, Cutter/Rizin) under one structured protocol.
+
+---
+
+## 🖥️ AegisRE Desktop GUI Studio
+
+AegisRE includes a dedicated graphical desktop application (**AegisRE Studio**) tailored for interactive exploration, binary inspection, and decompilation without requiring terminal commands.
+
+### Key GUI Highlights:
+- **⚡ Embedded x86_64 Disassembler**: Fast opcode, operand, and mnemonic disassembly with section address navigation.
+- **🔬 Ghidra-Style C Decompiler**: Real-time high-level pseudocode generation for disassembled procedures.
+- **📊 Binary Structure & Header Inspector**: Visual views of PE/ELF/Mach-O sections, imports, exports, and mitigation security flags.
+- **🎨 Modern Dark & Light Mode**: Clean, customizable developer interface designed for long analysis sessions.
+- **🔄 Standalone & Portable**: Available both as an installer and a zero-install portable application.
 
 ---
 
@@ -45,6 +59,7 @@ Pre-compiled, zero-dependency release packages are available on the **[Releases 
 
 ## ⚡ Key Features
 
+- **🖥️ AegisRE Desktop GUI Studio**: Dedicated interactive graphical workspace with an embedded x86_64 disassembler, Ghidra-style C pseudocode decompiler, section browser, and light/dark theme switcher.
 - **🚀 High-Performance Standalone Launcher**: Fast compiled native executable (`aegis.exe`) with zero global runtime dependencies required.
 - **🤖 Native Model Context Protocol (MCP)**: Plugs directly into Claude Desktop, Cursor, Codex, Windsurf, or custom AI agents via `aegis --mcp`.
 - **🔍 Multi-Target Static Analysis**:
