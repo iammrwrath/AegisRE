@@ -119,6 +119,31 @@ export const documentationFactIssues = async (root, catalog) => {
       requireText(issues, path, content, "MCP-tool_catalog");
     }
   }
+  const languageInventory = JSON.parse(
+    await readFile(join(root, "website/locales/languages.json"), "utf8"),
+  );
+  const readmeLanguages = new Map(
+    languageInventory.map(({ readme, code }) => [readme, code]),
+  );
+  const baselineReadme = "docs/readme/README_ar.md";
+  const canonicalLinks = readmeLinkTargets(
+    root,
+    baselineReadme,
+    readmes.get(baselineReadme) ?? "",
+    readmeLanguages.get(baselineReadme),
+  );
+  for (const path of readmePaths.filter((path) => path !== "README.md"))
+    if (
+      JSON.stringify(
+        readmeLinkTargets(
+          root,
+          path,
+          readmes.get(path) ?? "",
+          readmeLanguages.get(path),
+        ),
+      ) !== JSON.stringify(canonicalLinks)
+    )
+      issues.push(`${path}: documentation links differ from README.md`);
 
   const installationPath = "docs/getting-started/installation.md";
   const installation = await readFile(join(root, installationPath), "utf8");

@@ -43,6 +43,7 @@ Built for both human security analysts and autonomous AI coding agents, AegisRE 
 AegisRE includes a dedicated graphical desktop application (**AegisRE Studio**) tailored for interactive exploration, binary inspection, and decompilation without requiring terminal commands.
 
 ### Key GUI Highlights:
+
 - **⚡ Embedded x86_64 Disassembler**: Fast opcode, operand, and mnemonic disassembly with section address navigation.
 - **🔬 Ghidra-Style C Decompiler**: Real-time high-level pseudocode generation for disassembled procedures.
 - **📊 Binary Structure & Header Inspector**: Visual views of PE/ELF/Mach-O sections, imports, exports, and mitigation security flags.
