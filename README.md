@@ -174,6 +174,12 @@ iscc installer.iss
 
 ---
 
+## 🙏 Acknowledgements & Upstream Attribution
+
+AegisRE is derived from and builds upon the open-source work of [**morluto/rea**](https://github.com/morluto/rea) (licensed under MIT). We extend our sincere thanks and credit to the original creators and contributors of the REA project for pioneering the core unified reverse-engineering engine and agent architecture.
+
+---
+
 ## 📄 License
 
 Distributed under the [MIT License](LICENSE).
