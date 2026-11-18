@@ -31,6 +31,13 @@ Built for both human security analysts and autonomous AI coding agents, AegisRE 
 
 ---
 
+## ⚠️ Project Status & Known Issues
+
+> [!NOTE]
+> **Active Development / Alpha Notice**: AegisRE and the Desktop GUI Studio are in active, early development. You may encounter bugs, quirks, or unexpected edge cases across various binary targets and decompiler bridges. If you run into issues or have feedback, please feel free to open an issue on the [GitHub Issues](https://github.com/iammrwrath/AegisRE/issues) page to help improve the project!
+
+---
+
 ## 🖥️ AegisRE Desktop GUI Studio
 
 AegisRE includes a dedicated graphical desktop application (**AegisRE Studio**) tailored for interactive exploration, binary inspection, and decompilation without requiring terminal commands.
