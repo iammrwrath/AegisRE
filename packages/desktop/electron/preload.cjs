@@ -6,6 +6,9 @@ contextBridge.exposeInMainWorld('aegis', {
   analyzeTarget: (filePath) => ipcRenderer.invoke('aegis:analyzeTarget', filePath),
   disassembleAt: (filePath, address, size) =>
     ipcRenderer.invoke('aegis:disassembleAt', { filePath, address, size }),
+  generateReport: (analysisData, options) =>
+    ipcRenderer.invoke('aegis:generateReport', { analysisData, options }),
+  saveReport: (payload) => ipcRenderer.invoke('aegis:saveReport', payload),
   getGhidraStatus: () => ipcRenderer.invoke('aegis:ghidraStatus'),
   getTheme: () => ipcRenderer.invoke('theme:get'),
   setTheme: (theme) => ipcRenderer.invoke('theme:set', theme),

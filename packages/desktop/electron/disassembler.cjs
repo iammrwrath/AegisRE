@@ -746,7 +746,9 @@ function decompileInstructionsToC(funcMeta, instructions) {
 function computeEntropySample(fd, fileSize) {
   const sampleSize = Math.min(fileSize, 2 * 1024 * 1024);
   const buf = Buffer.alloc(sampleSize);
-  fs.readSync(fd, buf, 0, sampleSize, 0);
+  if (sampleSize > 0) {
+    fs.readSync(fd, buf, 0, sampleSize, 0);
+  }
   const freq = new Uint32Array(256);
   for (let i = 0; i < sampleSize; i++) freq[buf[i]]++;
   let entropy = 0;
@@ -759,6 +761,703 @@ function computeEntropySample(fd, fileSize) {
   return {
     entropy: Math.round(entropy * 100) / 100,
     headerBuf: buf,
+  };
+}
+
+function computeFileHashes(fd, fileSize, headerBuf) {
+  const maxHashBytes = Math.min(fileSize, 64 * 1024 * 1024);
+  const sha = crypto.createHash('sha256');
+  const md5 = crypto.createHash('md5');
+  if (maxHashBytes <= headerBuf.length) {
+    sha.update(headerBuf.subarray(0, maxHashBytes));
+    md5.update(headerBuf.subarray(0, maxHashBytes));
+  } else {
+    sha.update(headerBuf);
+    md5.update(headerBuf);
+    const chunkBuf = Buffer.alloc(4 * 1024 * 1024);
+    let pos = headerBuf.length;
+    while (pos < maxHashBytes) {
+      const toRead = Math.min(chunkBuf.length, maxHashBytes - pos);
+      const bytesRead = fs.readSync(fd, chunkBuf, 0, toRead, pos);
+      if (bytesRead <= 0) break;
+      const view = chunkBuf.subarray(0, bytesRead);
+      sha.update(view);
+      md5.update(view);
+      pos += bytesRead;
+    }
+  }
+  return {
+    sha256: sha.digest('hex'),
+    md5: md5.digest('hex'),
+  };
+}
+
+function readFileSlice(fd, fileSize, offset, length) {
+  if (offset < 0 || offset >= fileSize || length <= 0) return Buffer.alloc(0);
+  const actual = Math.min(length, fileSize - offset);
+  const out = Buffer.alloc(actual);
+  fs.readSync(fd, out, 0, actual, offset);
+  return out;
+}
+
+const RUNTIME_INDICATOR_RULES = [
+  { pattern: /\b(ipcMain|ipcRenderer|contextBridge|BrowserWindow|webContents|remote)\b/g, dll: 'ELECTRON', category: 'Electron IPC & Desktop Bridge', plain: 'Electron main/renderer process IPC or window bridge API' },
+  { pattern: /\b(child_process|execSync|spawnSync|execFile)\b/g, dll: 'NODE.JS', category: 'Runs Programs', plain: 'Spawns child processes or shell commands from Node.js' },
+  { pattern: /\b(createCipheriv|createDecipheriv|subtle\.encrypt|subtle\.decrypt|createHash)\b/g, dll: 'CRYPTO', category: 'Encryption & Security', plain: 'Performs symmetric encryption, decryption, or cryptographic hashing' },
+  { pattern: /\b(WebSocket|XMLHttpRequest|axios|https\.request|http\.request)\b/g, dll: 'NETWORK', category: 'Internet & Network', plain: 'Makes outbound HTTP/HTTPS or WebSocket requests' },
+  { pattern: /\b(sqlite3_open|sqlite3_exec|indexedDB|localStorage)\b/g, dll: 'STORAGE', category: 'Files & Folders', plain: 'Reads or persists structured data in local database or storage' },
+  { pattern: /\b(dlopen|dlsym|pthread_create|mmap|mprotect|execve|fork|ptrace)\b/g, dll: 'POSIX', category: 'Memory & Code', plain: 'POSIX dynamic library loading, threading, or memory mapping' },
+  { pattern: /android\.permission\.[A-Z0-9_]+/g, dll: 'ANDROID', category: 'Android Permissions & Components', plain: 'Declares or checks an Android system permission' },
+];
+
+function populateFallbackIndicators(strings, headerBuf, imports, capabilityMap) {
+  const seenFns = new Set(imports.map((i) => `${i.dll}!${i.function}`));
+  const textCorpus = strings.map((s) => s.value).join('\n');
+
+  for (const [apiName, meta] of Object.entries(API_DICTIONARY)) {
+    if (seenFns.has(`RUNTIME!${apiName}`)) continue;
+    const hit = textCorpus.includes(apiName) || headerBuf.includes(Buffer.from(apiName, 'ascii'));
+    if (hit) {
+      seenFns.add(`RUNTIME!${apiName}`);
+      imports.push({
+        dll: 'DETECTED_SYMBOL',
+        function: apiName,
+        address: 'N/A',
+        category: meta.category,
+        plain: meta.plain,
+        signature: meta.sig,
+      });
+    }
+  }
+
+  for (const rule of RUNTIME_INDICATOR_RULES) {
+    const matches = textCorpus.match(rule.pattern);
+    if (matches) {
+      for (const m of new Set(matches)) {
+        const key = `${rule.dll}!${m}`;
+        if (seenFns.has(key)) continue;
+        seenFns.add(key);
+        imports.push({
+          dll: rule.dll,
+          function: m,
+          address: 'N/A',
+          category: rule.category,
+          plain: rule.plain,
+          signature: `${m}(...)`,
+        });
+      }
+    }
+  }
+
+  const urlCount = strings.filter((s) => s.section === 'Web Link / URL').length;
+  if (urlCount > 0 && !capabilityMap.has('Internet & Network')) {
+    capabilityMap.set('Internet & Network', [`References ${urlCount} embedded URL(s) or server endpoint(s)`]);
+  }
+}
+
+function analyzeElfTarget(fd, fileSize, headerBuf, filePath) {
+  const eiClass = headerBuf[4];
+  const isLE = headerBuf[5] !== 2;
+  const is64 = eiClass === 2;
+  const readU16 = (b, o) => (isLE ? b.readUInt16LE(o) : b.readUInt16BE(o));
+  const readU32 = (b, o) => (isLE ? b.readUInt32LE(o) : b.readUInt32BE(o));
+  const readU64 = (b, o) => (isLE ? b.readBigUInt64LE(o) : b.readBigUInt64BE(o));
+
+  const eType = readU16(headerBuf, 16);
+  const eMachine = readU16(headerBuf, 18);
+  const machineNames = {
+    0x3e: '64-bit Intel/AMD (x86_64)',
+    0x03: '32-bit Intel/AMD (x86)',
+    0xb7: '64-bit ARM (AArch64)',
+    0x28: '32-bit ARM',
+    0xf3: 'RISC-V',
+    0x08: 'MIPS',
+  };
+  const arch = machineNames[eMachine] || `ELF Machine 0x${eMachine.toString(16).toUpperCase()}`;
+  const format = is64 ? 'ELF64' : 'ELF32';
+  const plainFormat = eType === 3 ? 'Linux Shared Library / PIE Executable (ELF)' : 'Linux Executable Binary (ELF)';
+  const subsystem = 'Linux / POSIX Runtime';
+
+  const eEntry = is64 ? readU64(headerBuf, 24) : BigInt(readU32(headerBuf, 24));
+  const eShoff = is64 ? Number(readU64(headerBuf, 40)) : readU32(headerBuf, 32);
+  const eShentsize = readU16(headerBuf, is64 ? 58 : 46);
+  const eShnum = readU16(headerBuf, is64 ? 60 : 48);
+  const eShstrndx = readU16(headerBuf, is64 ? 62 : 50);
+
+  const sections = [];
+  if (eShoff > 0 && eShentsize > 0 && eShnum > 0 && eShnum < 128) {
+    const shTableBuf = readFileSlice(fd, fileSize, eShoff, eShentsize * eShnum);
+    let shstrBuf = Buffer.alloc(0);
+    if (eShstrndx < eShnum && (eShstrndx + 1) * eShentsize <= shTableBuf.length) {
+      const strBase = eShstrndx * eShentsize;
+      const strOff = is64 ? Number(readU64(shTableBuf, strBase + 24)) : readU32(shTableBuf, strBase + 16);
+      const strSize = is64 ? Number(readU64(shTableBuf, strBase + 32)) : readU32(shTableBuf, strBase + 20);
+      if (strSize > 0 && strSize < 1024 * 1024) {
+        shstrBuf = readFileSlice(fd, fileSize, strOff, strSize);
+      }
+    }
+
+    for (let i = 0; i < eShnum; i++) {
+      const off = i * eShentsize;
+      if (off + eShentsize > shTableBuf.length) break;
+      const nameOff = readU32(shTableBuf, off);
+      let secName = `sec_${i}`;
+      if (nameOff < shstrBuf.length) {
+        let end = nameOff;
+        while (end < shstrBuf.length && shstrBuf[end] !== 0) end++;
+        secName = shstrBuf.toString('ascii', nameOff, end) || secName;
+      }
+      const shAddr = is64 ? readU64(shTableBuf, off + 16) : BigInt(readU32(shTableBuf, off + 12));
+      const shOffset = is64 ? Number(readU64(shTableBuf, off + 24)) : readU32(shTableBuf, off + 16);
+      const shSize = is64 ? Number(readU64(shTableBuf, off + 32)) : readU32(shTableBuf, off + 20);
+      if (secName || shSize > 0) {
+        sections.push({
+          name: secName,
+          vAddr: Number(shAddr & 0xffffffffn),
+          vSize: shSize,
+          rawPtr: shOffset,
+          rawSize: shSize,
+          address: formatHex64(shAddr),
+          size: shSize,
+        });
+      }
+    }
+  }
+
+  const scanBuf = fileSize > headerBuf.length
+    ? readFileSlice(fd, fileSize, 0, Math.min(fileSize, 8 * 1024 * 1024))
+    : headerBuf;
+  const strings = extractStringsFromBuffer(scanBuf, 0, 1200);
+  const functions = [];
+
+  if (eMachine === 0x3e && eEntry > 0n) {
+    let entryFileOff = -1;
+    const textSec = sections.find((s) => s.name === '.text') || sections.find((s) => {
+      const va = BigInt(s.address);
+      return eEntry >= va && eEntry < va + BigInt(s.size || 0);
+    });
+    if (textSec) {
+      const va = BigInt(textSec.address);
+      if (eEntry >= va && eEntry < va + BigInt(textSec.size || 0)) {
+        entryFileOff = textSec.rawPtr + Number(eEntry - va);
+      }
+    } else if (eEntry < BigInt(fileSize)) {
+      entryFileOff = Number(eEntry);
+    }
+
+    if (entryFileOff >= 0 && entryFileOff < fileSize) {
+      const codeBuf = readFileSlice(fd, fileSize, entryFileOff, 512);
+      const disasm = disassembleX64Buffer(codeBuf, eEntry, 140, {});
+      const addrHex = formatHex64(eEntry);
+      const sig = 'uint64_t entry(uint64_t rdi, uint64_t rsi, uint64_t rdx, uint64_t rcx)';
+      const decompiled = decompileInstructionsToC(
+        {
+          name: 'entry',
+          address: addrHex,
+          size: codeBuf.length,
+          signature: sig,
+          plainTitle: 'ELF Entry Point (_start)',
+          plainExplanation: `Primary ELF entry point of ${path.basename(filePath)} at ${addrHex}.`,
+        },
+        disasm
+      );
+      functions.push({
+        address: addrHex,
+        rva: Number(eEntry),
+        name: 'entry',
+        size: codeBuf.length,
+        calls: disasm.filter((d) => d.mnemonic === 'call').length,
+        category: 'Entry Point',
+        signature: sig,
+        plainTitle: 'ELF Entry Point (_start)',
+        plainExplanation: `Primary ELF entry point of ${path.basename(filePath)} at ${addrHex}.`,
+        disassembly: disasm,
+        decompiled,
+      });
+    }
+  }
+
+  return {
+    format,
+    plainFormat,
+    arch,
+    subsystem,
+    entryPointHex: formatHex64(eEntry),
+    imageBaseHex: '0x0',
+    securityFeatures: ['ELF Header Parsed', is64 ? '64-bit Address Space' : '32-bit Address Space'],
+    sections,
+    functions,
+    strings,
+    extraCapabilities: [],
+  };
+}
+
+function analyzeMachOTarget(fd, fileSize, headerBuf) {
+  const magicBE = headerBuf.readUInt32BE(0);
+  const magicLE = headerBuf.readUInt32LE(0);
+  const isFat = magicBE === 0xcafebabe;
+  const is64 = magicBE === 0xfeedfacf || magicLE === 0xfeedfacf;
+  const isLE = magicLE === 0xfeedface || magicLE === 0xfeedfacf;
+
+  let arch = 'Apple Binary';
+  if (isFat) {
+    const nFatArch = headerBuf.readUInt32BE(4);
+    arch = `Universal Fat Binary (${nFatArch} slice${nFatArch === 1 ? '' : 's'})`;
+  } else {
+    const cpuType = isLE ? headerBuf.readUInt32LE(4) : headerBuf.readUInt32BE(4);
+    if (cpuType === 0x01000007) arch = '64-bit Intel (x86_64)';
+    else if (cpuType === 0x00000007) arch = '32-bit Intel (x86)';
+    else if (cpuType === 0x0100000c) arch = '64-bit Apple Silicon (ARM64)';
+    else if (cpuType === 0x0000000c) arch = '32-bit ARM';
+  }
+
+  const scanBuf = fileSize > headerBuf.length
+    ? readFileSlice(fd, fileSize, 0, Math.min(fileSize, 8 * 1024 * 1024))
+    : headerBuf;
+  const strings = extractStringsFromBuffer(scanBuf, 0, 1200);
+
+  return {
+    format: isFat ? 'Mach-O Universal' : is64 ? 'Mach-O 64-bit' : 'Mach-O 32-bit',
+    plainFormat: 'macOS / iOS Mach-O Executable or Library',
+    arch,
+    subsystem: 'macOS / iOS Darwin',
+    entryPointHex: '0x0',
+    imageBaseHex: '0x100000000',
+    securityFeatures: ['Mach-O Header Parsed'],
+    sections: [],
+    functions: [],
+    strings,
+    extraCapabilities: [],
+  };
+}
+
+function analyzeAsarTarget(fd, fileSize, headerBuf, filePath) {
+  if (headerBuf.length < 16) return null;
+  const sizePickle = headerBuf.readUInt32LE(0);
+  const headerSize = headerBuf.readUInt32LE(4);
+  const jsonLen = headerBuf.readUInt32LE(12);
+  if (sizePickle !== 4 || headerSize < 12 || jsonLen === 0 || 8 + headerSize > fileSize || jsonLen > 32 * 1024 * 1024) {
+    return null;
+  }
+
+  const actualJsonLen = Math.min(jsonLen, Math.max(0, headerSize - 8));
+  if (actualJsonLen === 0) return null;
+  const fullHdrBuf = 16 + actualJsonLen <= headerBuf.length
+    ? headerBuf.subarray(16, 16 + actualJsonLen)
+    : readFileSlice(fd, fileSize, 16, actualJsonLen);
+  const jsonStr = fullHdrBuf.toString('utf8').replace(/\0+$/, '');
+  let tree = null;
+  try {
+    tree = JSON.parse(jsonStr);
+  } catch (_) {
+    for (let k = 1; k <= 4; k++) {
+      try {
+        tree = JSON.parse(jsonStr + '}'.repeat(k));
+        break;
+      } catch (__) {}
+    }
+  }
+  if (!tree || typeof tree !== 'object' || !tree.files) return null;
+
+  const dataBaseOffset = 8 + headerSize;
+  const entries = [];
+  const topDirs = new Map();
+  let totalFiles = 0;
+
+  const walk = (node, prefix) => {
+    if (!node || !node.files) return;
+    for (const [name, child] of Object.entries(node.files)) {
+      const relPath = prefix ? `${prefix}/${name}` : name;
+      if (child.files) {
+        walk(child, relPath);
+      } else {
+        totalFiles++;
+        const top = relPath.includes('/') ? relPath.split('/')[0] : '(root)';
+        const size = Number(child.size || 0);
+        const offset = child.offset !== undefined ? Number(child.offset) : -1;
+        const prev = topDirs.get(top) || { count: 0, size: 0 };
+        topDirs.set(top, { count: prev.count + 1, size: prev.size + size });
+        if (entries.length < 400) {
+          entries.push({ relPath, size, offset, unpacked: Boolean(child.unpacked) });
+        }
+      }
+    }
+  };
+  walk(tree, '');
+
+  const sections = Array.from(topDirs.entries()).map(([dirName, info], idx) => ({
+    name: dirName,
+    vAddr: idx,
+    vSize: info.size,
+    rawPtr: dataBaseOffset,
+    rawSize: info.size,
+    address: `${info.count} file(s)`,
+    size: info.size,
+  }));
+
+  const functions = [];
+  const pkgEntry = entries.find((e) => e.relPath === 'package.json' && e.offset >= 0 && e.size > 0 && e.size < 512 * 1024);
+  let pkgMain = '';
+  let pkgSummary = '';
+  if (pkgEntry) {
+    const pkgBuf = readFileSlice(fd, fileSize, dataBaseOffset + pkgEntry.offset, pkgEntry.size);
+    const pkgText = pkgBuf.toString('utf8');
+    try {
+      const pkgJson = JSON.parse(pkgText);
+      pkgMain = pkgJson.main || '';
+      pkgSummary = `App "${pkgJson.name || path.basename(filePath)}" v${pkgJson.version || '?'} (main: ${pkgMain || 'index.js'})`;
+    } catch (_) {}
+    functions.push({
+      address: `0x${(dataBaseOffset + pkgEntry.offset).toString(16).toUpperCase()}`,
+      rva: dataBaseOffset + pkgEntry.offset,
+      name: 'package.json',
+      size: pkgEntry.size,
+      calls: 0,
+      category: 'ASAR Manifest',
+      signature: 'package.json (Electron App Manifest)',
+      plainTitle: 'Electron Package Manifest',
+      plainExplanation: pkgSummary || 'Root Electron package.json defining entry point, dependencies, and scripts.',
+      disassembly: [],
+      decompiled: pkgText,
+    });
+  }
+
+  const keyCodeEntries = entries
+    .filter((e) => !e.unpacked && e.offset >= 0 && e.size > 0 && /\.(js|cjs|mjs|ts|json|html)$/i.test(e.relPath) && e.relPath !== 'package.json')
+    .sort((a, b) => {
+      const score = (p) => {
+        if (pkgMain && (p === pkgMain || p === pkgMain.replace(/^\.\//, ''))) return 0;
+        if (/preload|main|index|ipc/i.test(p)) return 1;
+        return 2;
+      };
+      return score(a.relPath) - score(b.relPath);
+    })
+    .slice(0, 20);
+
+  for (const entry of keyCodeEntries) {
+    const raw = readFileSlice(fd, fileSize, dataBaseOffset + entry.offset, Math.min(entry.size, 32768));
+    functions.push({
+      address: `0x${(dataBaseOffset + entry.offset).toString(16).toUpperCase()}`,
+      rva: dataBaseOffset + entry.offset,
+      name: entry.relPath,
+      size: entry.size,
+      calls: 0,
+      category: 'ASAR Module',
+      signature: `// ASAR Entry: ${entry.relPath} (${entry.size} bytes)`,
+      plainTitle: `Packaged Source/Asset (${entry.relPath})`,
+      plainExplanation: `Embedded file at ASAR offset 0x${(dataBaseOffset + entry.offset).toString(16).toUpperCase()} (${entry.size.toLocaleString()} bytes).`,
+      disassembly: [],
+      decompiled: raw.toString('utf8'),
+    });
+  }
+
+  const scanBuf = fileSize > headerBuf.length
+    ? readFileSlice(fd, fileSize, 0, Math.min(fileSize, 8 * 1024 * 1024))
+    : headerBuf;
+  const strings = extractStringsFromBuffer(scanBuf, 0, 1200);
+  const exportsList = entries.slice(0, 120).map((e) => ({
+    name: e.relPath,
+    rva: e.offset >= 0 ? dataBaseOffset + e.offset : 0,
+    address: e.offset >= 0 ? `0x${(dataBaseOffset + e.offset).toString(16).toUpperCase()}` : 'unpacked',
+  }));
+
+  const nativeAddons = entries.filter((e) => /\.node$|\.dll$|\.exe$/i.test(e.relPath)).map((e) => e.relPath);
+  const extraCapabilities = [
+    {
+      title: 'Electron ASAR Archive Structure',
+      count: totalFiles,
+      examples: [
+        `Contains ${totalFiles.toLocaleString()} packaged files across ${topDirs.size} top-level folder(s)`,
+        ...(pkgSummary ? [pkgSummary] : []),
+        ...(nativeAddons.length > 0 ? [`Native addons/binaries: ${nativeAddons.slice(0, 5).join(', ')}`] : []),
+      ],
+    },
+  ];
+
+  return {
+    format: 'Electron ASAR Archive',
+    plainFormat: 'Electron Desktop Application Bundle (.asar)',
+    arch: 'JavaScript / Node.js / Chromium',
+    subsystem: 'Electron Desktop Runtime',
+    entryPointHex: pkgMain || 'package.json',
+    imageBaseHex: `0x${dataBaseOffset.toString(16).toUpperCase()}`,
+    securityFeatures: ['ASAR Pickle JSON Index', `Data Offset 0x${dataBaseOffset.toString(16).toUpperCase()}`],
+    sections,
+    functions,
+    strings,
+    exportsList,
+    totalFunctionCount: totalFiles,
+    extraCapabilities,
+  };
+}
+
+function analyzeZipPackageTarget(fd, fileSize, headerBuf, filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  const formatMap = {
+    '.apk': ['Android Package (APK)', 'Android Mobile Application (.apk)', 'Dalvik / ART Bytecode & Native JNI', 'Android OS'],
+    '.msix': ['Windows App Package (MSIX)', 'Windows Modern MSIX Package (.msix)', 'Windows AppContainer', 'Windows AppContainer'],
+    '.appx': ['Windows App Package (APPX)', 'Windows Modern AppX Package (.appx)', 'Windows AppContainer', 'Windows AppContainer'],
+    '.jar': ['Java Archive (JAR)', 'Java Bytecode Archive (.jar)', 'JVM Bytecode', 'Java Virtual Machine'],
+    '.ipa': ['iOS App Archive (IPA)', 'Apple iOS Application Package (.ipa)', 'iOS ARM64 Bundle', 'Apple iOS'],
+  };
+  const [format, plainFormat, arch, subsystem] = formatMap[ext] || [
+    'ZIP Archive / Package',
+    'Compressed ZIP Application Package (.zip)',
+    'Cross-Platform Archive',
+    'Packaged Container',
+  ];
+
+  const entries = [];
+  const tailSize = Math.min(fileSize, 65557);
+  const tailBuf = readFileSlice(fd, fileSize, fileSize - tailSize, tailSize);
+  let cdOffset = -1;
+  let cdSize = 0;
+  for (let i = tailBuf.length - 22; i >= 0; i--) {
+    if (tailBuf.readUInt32LE(i) === 0x06054b50) {
+      cdSize = tailBuf.readUInt32LE(i + 12);
+      cdOffset = tailBuf.readUInt32LE(i + 16);
+      break;
+    }
+  }
+
+  if (cdOffset >= 0 && cdSize > 0 && cdOffset < fileSize) {
+    const cdBuf = readFileSlice(fd, fileSize, cdOffset, Math.min(cdSize, 4 * 1024 * 1024));
+    let pos = 0;
+    while (pos + 46 <= cdBuf.length && entries.length < 600) {
+      if (cdBuf.readUInt32LE(pos) !== 0x02014b50) break;
+      const compSize = cdBuf.readUInt32LE(pos + 20);
+      const uncompSize = cdBuf.readUInt32LE(pos + 24);
+      const fnLen = cdBuf.readUInt16LE(pos + 28);
+      const extraLen = cdBuf.readUInt16LE(pos + 30);
+      const commentLen = cdBuf.readUInt16LE(pos + 32);
+      const localHdrOff = cdBuf.readUInt32LE(pos + 42);
+      if (pos + 46 + fnLen > cdBuf.length) break;
+      const name = cdBuf.toString('utf8', pos + 46, pos + 46 + fnLen);
+      entries.push({ name, compSize, uncompSize, localHdrOff });
+      pos += 46 + fnLen + extraLen + commentLen;
+    }
+  } else {
+    let pos = 0;
+    while (pos + 30 <= headerBuf.length && entries.length < 300) {
+      if (headerBuf.readUInt32LE(pos) !== 0x04034b50) break;
+      const compSize = headerBuf.readUInt32LE(pos + 18);
+      const uncompSize = headerBuf.readUInt32LE(pos + 22);
+      const fnLen = headerBuf.readUInt16LE(pos + 26);
+      const extraLen = headerBuf.readUInt16LE(pos + 28);
+      if (pos + 30 + fnLen > headerBuf.length) break;
+      const name = headerBuf.toString('utf8', pos + 30, pos + 30 + fnLen);
+      entries.push({ name, compSize, uncompSize, localHdrOff: pos });
+      pos += 30 + fnLen + extraLen + compSize;
+      if (compSize === 0) break;
+    }
+  }
+
+  const groupBuckets = new Map();
+  for (const e of entries) {
+    const bucket = e.name.includes('/') ? e.name.split('/')[0] : '(root)';
+    const cur = groupBuckets.get(bucket) || { count: 0, size: 0, offset: e.localHdrOff };
+    groupBuckets.set(bucket, {
+      count: cur.count + 1,
+      size: cur.size + (e.uncompSize || e.compSize || 0),
+      offset: Math.min(cur.offset, e.localHdrOff),
+    });
+  }
+
+  const sections = Array.from(groupBuckets.entries()).map(([bucket, info]) => ({
+    name: bucket,
+    vAddr: info.offset,
+    vSize: info.size,
+    rawPtr: info.offset,
+    rawSize: info.size,
+    address: `${info.count} member(s)`,
+    size: info.size,
+  }));
+
+  const exportsList = entries.slice(0, 120).map((e) => ({
+    name: e.name,
+    rva: e.localHdrOff,
+    address: `0x${e.localHdrOff.toString(16).toUpperCase()}`,
+  }));
+
+  const scanBuf = fileSize > headerBuf.length
+    ? readFileSlice(fd, fileSize, 0, Math.min(fileSize, 8 * 1024 * 1024))
+    : headerBuf;
+  const strings = extractStringsFromBuffer(scanBuf, 0, 1200);
+
+  const keyEntries = entries
+    .filter((e) => /AndroidManifest\.xml$|classes\d*\.dex$|\.so$|\.dll$|\.exe$|AppxManifest\.xml$|META-INF\/MANIFEST\.MF$/i.test(e.name))
+    .slice(0, 16);
+  const functions = keyEntries.map((e) => ({
+    address: `0x${e.localHdrOff.toString(16).toUpperCase()}`,
+    rva: e.localHdrOff,
+    name: e.name,
+    size: e.uncompSize || e.compSize || 0,
+    calls: 0,
+    category: 'Package Member',
+    signature: `// ZIP Member: ${e.name} (uncompressed ${e.uncompSize} B, compressed ${e.compSize} B)`,
+    plainTitle: `Archive Entry (${e.name})`,
+    plainExplanation: `Packaged member at local header offset 0x${e.localHdrOff.toString(16).toUpperCase()}.`,
+    disassembly: [],
+    decompiled: `// Archive Member: ${e.name}\n// Local Header Offset: 0x${e.localHdrOff.toString(16).toUpperCase()}\n// Compressed Size: ${e.compSize} bytes\n// Uncompressed Size: ${e.uncompSize} bytes\n`,
+  }));
+
+  const extraCapabilities = [];
+  if (entries.length > 0) {
+    extraCapabilities.push({
+      title: 'Archive Package Inventory',
+      count: entries.length,
+      examples: entries.slice(0, 6).map((e) => `${e.name} (${(e.uncompSize || 0).toLocaleString()} bytes)`),
+    });
+  }
+
+  return {
+    format,
+    plainFormat,
+    arch,
+    subsystem,
+    entryPointHex: keyEntries[0]?.name || '0x0',
+    imageBaseHex: '0x0',
+    securityFeatures: ['ZIP Central Directory Parsed'],
+    sections,
+    functions,
+    strings,
+    exportsList,
+    totalFunctionCount: entries.length,
+    extraCapabilities,
+  };
+}
+
+function readUleb128(buf, pos) {
+  let result = 0;
+  let shift = 0;
+  let cursor = pos;
+  while (cursor < buf.length && shift <= 35) {
+    const byte = buf[cursor++];
+    result |= (byte & 0x7f) << shift;
+    if ((byte & 0x80) === 0) break;
+    shift += 7;
+  }
+  return { value: result >>> 0, next: cursor };
+}
+
+function analyzeWasmTarget(fd, fileSize, headerBuf) {
+  const fullBuf = fileSize <= 16 * 1024 * 1024
+    ? readFileSlice(fd, fileSize, 0, fileSize)
+    : headerBuf;
+  const version = fullBuf.length >= 8 ? fullBuf.readUInt32LE(4) : 1;
+  const secNames = {
+    0: 'custom',
+    1: 'type',
+    2: 'import',
+    3: 'function',
+    4: 'table',
+    5: 'memory',
+    6: 'global',
+    7: 'export',
+    8: 'start',
+    9: 'element',
+    10: 'code',
+    11: 'data',
+    12: 'datacount',
+  };
+
+  const sections = [];
+  const exportsList = [];
+  const imports = [];
+  let pos = 8;
+  while (pos < fullBuf.length) {
+    const secId = fullBuf[pos++];
+    const lenRes = readUleb128(fullBuf, pos);
+    pos = lenRes.next;
+    const secSize = lenRes.value;
+    const secEnd = Math.min(fullBuf.length, pos + secSize);
+    const secName = secNames[secId] || `section_${secId}`;
+    sections.push({
+      name: secName,
+      vAddr: pos,
+      vSize: secSize,
+      rawPtr: pos,
+      rawSize: secSize,
+      address: `0x${pos.toString(16).toUpperCase()}`,
+      size: secSize,
+    });
+
+    if (secId === 7 && pos < secEnd) {
+      let c = readUleb128(fullBuf, pos);
+      let p = c.next;
+      for (let i = 0; i < Math.min(c.value, 200) && p < secEnd; i++) {
+        const nl = readUleb128(fullBuf, p);
+        p = nl.next;
+        const name = fullBuf.toString('utf8', p, Math.min(secEnd, p + nl.value));
+        p += nl.value;
+        const kind = fullBuf[p++];
+        const idx = readUleb128(fullBuf, p);
+        p = idx.next;
+        if (name) {
+          exportsList.push({
+            name: `${name} (kind=${kind}, idx=${idx.value})`,
+            rva: pos,
+            address: `wasm:export#${idx.value}`,
+          });
+        }
+      }
+    } else if (secId === 2 && pos < secEnd) {
+      let c = readUleb128(fullBuf, pos);
+      let p = c.next;
+      for (let i = 0; i < Math.min(c.value, 200) && p < secEnd; i++) {
+        const ml = readUleb128(fullBuf, p);
+        p = ml.next;
+        const modName = fullBuf.toString('utf8', p, Math.min(secEnd, p + ml.value));
+        p += ml.value;
+        const fl = readUleb128(fullBuf, p);
+        p = fl.next;
+        const fieldName = fullBuf.toString('utf8', p, Math.min(secEnd, p + fl.value));
+        p += fl.value;
+        const kind = fullBuf[p++];
+        if (kind === 0) {
+          p = readUleb128(fullBuf, p).next;
+        } else if (kind === 1) {
+          p += 1;
+          const limFlag = fullBuf[p++];
+          p = readUleb128(fullBuf, p).next;
+          if (limFlag & 1) p = readUleb128(fullBuf, p).next;
+        } else if (kind === 2) {
+          const limFlag = fullBuf[p++];
+          p = readUleb128(fullBuf, p).next;
+          if (limFlag & 1) p = readUleb128(fullBuf, p).next;
+        } else if (kind === 3) {
+          p += 2;
+        }
+        if (modName || fieldName) {
+          imports.push({
+            dll: modName || 'env',
+            function: fieldName || 'import',
+            address: `wasm:import#${i}`,
+            category: 'WASM Import',
+            plain: `WebAssembly import ${modName}.${fieldName} (kind ${kind})`,
+            signature: `${modName}.${fieldName}(...)`,
+          });
+        }
+      }
+    }
+    pos = secEnd;
+  }
+
+  const strings = extractStringsFromBuffer(fullBuf, 0, 1200);
+  return {
+    format: `WebAssembly (WASM v${version})`,
+    plainFormat: 'WebAssembly Binary Module (.wasm)',
+    arch: 'WebAssembly Stack VM (wasm32/64)',
+    subsystem: 'Browser / WASI Runtime',
+    entryPointHex: exportsList[0]?.address || '0x8',
+    imageBaseHex: '0x0',
+    securityFeatures: ['WASM Sandboxed Linear Memory'],
+    sections,
+    functions: [],
+    strings,
+    exportsList,
+    imports,
+    extraCapabilities: [],
   };
 }
 
@@ -883,8 +1582,7 @@ function analyzeBinaryTarget(filePath) {
 
   try {
     const { entropy, headerBuf } = computeEntropySample(fd, fileSize);
-    const sha256 = crypto.createHash('sha256').update(headerBuf).digest('hex');
-    const md5 = crypto.createHash('md5').update(headerBuf).digest('hex');
+    const { sha256, md5 } = computeFileHashes(fd, fileSize, headerBuf);
 
     let format = 'Binary / Data File';
     let plainFormat = 'General Application or Data File';
@@ -894,6 +1592,9 @@ function analyzeBinaryTarget(filePath) {
     let imageBase = 0x140000000n;
     let entryRva = 0;
     let is64Bit = true;
+    let imageBaseOverride = null;
+    let entryPointOverride = null;
+    let extraCapabilities = [];
 
     const sections = [];
     const securityFeatures = [];
@@ -905,10 +1606,12 @@ function analyzeBinaryTarget(filePath) {
     let strings = [];
     let totalFunctionCount = 0;
 
-    // Check if Windows PE ('MZ')
+    // Check if Windows PE ('MZ' + 'PE\0\0')
+    let isValidPE = false;
     if (headerBuf.length >= 64 && headerBuf[0] === 0x4d && headerBuf[1] === 0x5a) {
       const peOffset = headerBuf.readUInt32LE(0x3c);
       if (peOffset > 0 && peOffset + 24 < headerBuf.length && headerBuf.toString('ascii', peOffset, peOffset + 4) === 'PE\0\0') {
+        isValidPE = true;
         const machine = headerBuf.readUInt16LE(peOffset + 4);
         const numSections = headerBuf.readUInt16LE(peOffset + 6);
         const timestamp = headerBuf.readUInt32LE(peOffset + 8);
@@ -1306,13 +2009,60 @@ function analyzeBinaryTarget(filePath) {
           }
         }
       }
-    } else {
-      // Fallback for non-PE files
-      strings = extractStringsFromBuffer(headerBuf, 0, 800);
+    }
+
+    if (!isValidPE) {
+      let parsed = null;
+      const ext = path.extname(filePath).toLowerCase();
+
+      if (headerBuf.length >= 64 && headerBuf[0] === 0x7f && headerBuf[1] === 0x45 && headerBuf[2] === 0x4c && headerBuf[3] === 0x46) {
+        parsed = analyzeElfTarget(fd, fileSize, headerBuf, filePath);
+      } else if (headerBuf.length >= 8 && headerBuf[0] === 0x00 && headerBuf[1] === 0x61 && headerBuf[2] === 0x73 && headerBuf[3] === 0x6d) {
+        parsed = analyzeWasmTarget(fd, fileSize, headerBuf);
+      } else if (headerBuf.length >= 4 && headerBuf[0] === 0x50 && headerBuf[1] === 0x4b && headerBuf[2] === 0x03 && headerBuf[3] === 0x04) {
+        parsed = analyzeZipPackageTarget(fd, fileSize, headerBuf, filePath);
+      } else if (ext === '.asar' || (headerBuf.length >= 17 && headerBuf.readUInt32LE(0) === 4 && headerBuf[16] === 0x7b)) {
+        parsed = analyzeAsarTarget(fd, fileSize, headerBuf, filePath);
+      } else if (headerBuf.length >= 8) {
+        const mBE = headerBuf.readUInt32BE(0);
+        const mLE = headerBuf.readUInt32LE(0);
+        const isFatMachO = mBE === 0xcafebabe && headerBuf.readUInt32BE(4) > 0 && headerBuf.readUInt32BE(4) <= 32;
+        if (mBE === 0xfeedface || mBE === 0xfeedfacf || mLE === 0xfeedface || mLE === 0xfeedfacf || isFatMachO) {
+          parsed = analyzeMachOTarget(fd, fileSize, headerBuf);
+        }
+      }
+
+      if (parsed) {
+        format = parsed.format;
+        plainFormat = parsed.plainFormat;
+        arch = parsed.arch;
+        subsystem = parsed.subsystem;
+        imageBaseOverride = parsed.imageBaseHex;
+        entryPointOverride = parsed.entryPointHex;
+        if (parsed.securityFeatures) securityFeatures.push(...parsed.securityFeatures);
+        if (parsed.sections) sections.push(...parsed.sections);
+        if (parsed.functions) functions.push(...parsed.functions);
+        if (parsed.strings) strings = parsed.strings;
+        if (parsed.exportsList) exportsList.push(...parsed.exportsList);
+        if (parsed.imports) imports.push(...parsed.imports);
+        if (parsed.totalFunctionCount) totalFunctionCount = parsed.totalFunctionCount;
+        if (parsed.extraCapabilities) extraCapabilities = parsed.extraCapabilities;
+      } else {
+        const scanBuf = fileSize > headerBuf.length
+          ? readFileSlice(fd, fileSize, 0, Math.min(fileSize, 8 * 1024 * 1024))
+          : headerBuf;
+        strings = extractStringsFromBuffer(scanBuf, 0, 1200);
+        imageBaseOverride = '0x0';
+        entryPointOverride = '0x0';
+      }
     }
 
     // Build Plain-English Capability Cards from real parsed imports & sections
     const capabilityMap = new Map();
+    if (imports.length === 0) {
+      populateFallbackIndicators(strings, headerBuf, imports, capabilityMap);
+    }
+
     for (const imp of imports) {
       if (!capabilityMap.has(imp.category)) {
         capabilityMap.set(imp.category, []);
@@ -1344,16 +2094,19 @@ function analyzeBinaryTarget(filePath) {
       );
     }
 
-    const capabilities = Array.from(capabilityMap.entries()).map(([title, items]) => ({
-      title,
-      count: items.length,
-      examples: items.slice(0, 6),
-    }));
+    const capabilities = [
+      ...extraCapabilities,
+      ...Array.from(capabilityMap.entries()).map(([title, items]) => ({
+        title,
+        count: items.length,
+        examples: items.slice(0, 6),
+      })),
+    ];
 
     const isPacked = entropy >= 7.25;
     const packingExplanation = isPacked
-      ? `High entropy (${entropy}/8.0). Significant portions of this binary are compressed, packed, or encrypted.`
-      : `Unpacked native structure (Entropy ${entropy}/8.0). Machine code, ${imports.length} imported APIs across ${new Set(imports.map((i) => i.dll)).size} DLLs, and ${totalFunctionCount || functions.length} functions are directly readable.`;
+      ? `High entropy (${entropy}/8.0). Significant portions of this binary or package are compressed, packed, or encrypted.`
+      : `Unpacked / readable structure (Entropy ${entropy}/8.0). ${imports.length} API/indicator signals across ${new Set(imports.map((i) => i.dll)).size} module(s) and ${totalFunctionCount || functions.length} discovered routines/entries are directly inspectable.`;
 
     const fileSizeFormatted =
       fileSize > 1024 * 1024
@@ -1362,6 +2115,7 @@ function analyzeBinaryTarget(filePath) {
 
     return {
       success: true,
+      inspectedAt: new Date().toISOString(),
       target: {
         path: filePath,
         name: path.basename(filePath),
@@ -1372,14 +2126,14 @@ function analyzeBinaryTarget(filePath) {
         arch,
         subsystem,
         compileDate,
-        imageBase: formatHex64(imageBase),
-        entryPoint: formatHex64(imageBase + BigInt(entryRva)),
+        imageBase: imageBaseOverride || formatHex64(imageBase),
+        entryPoint: entryPointOverride || formatHex64(imageBase + BigInt(entryRva)),
         totalFunctionsDiscovered: totalFunctionCount || functions.length,
         totalDllsImported: new Set(imports.map((i) => i.dll)).size,
         entropy,
         isPacked,
         packingExplanation,
-        securityFeatures: securityFeatures.length > 0 ? securityFeatures : ['Standard PE Header'],
+        securityFeatures: securityFeatures.length > 0 ? securityFeatures : ['Standard File Header'],
         sections: sections.map((s) => `${s.name} (${s.size.toLocaleString()} bytes @ ${s.address})`),
         sectionDetails: sections,
         exports: exportsList,
@@ -1524,8 +2278,326 @@ function detectGhidraInstallation(customPath) {
   return { installed: false, path: null, headlessBat: null };
 }
 
+function escapeMdCell(val) {
+  return String(val == null ? '' : val)
+    .replace(/\r?\n/g, ' ')
+    .replace(/\|/g, '\\|');
+}
+
+function describeSectionPurpose(secName) {
+  const name = String(secName || '');
+  if (name === '.text') return 'Executable x86_64 machine code';
+  if (name === '.rdata' || name === '.rodata') return 'Read-only constants, strings, and import/export tables';
+  if (name === '.data') return 'Initialized global and static variables';
+  if (name === '.pdata') return 'x64 exception unwind table (maps every function boundary)';
+  if (name === '.rsrc') return 'Embedded resources (UI skins, icons, audio, manifests)';
+  if (name.toLowerCase().includes('nv')) return 'NVIDIA CUDA GPU compute kernels (AI / neural DSP)';
+  if (name === '.reloc') return 'ASLR base relocation table';
+  if (name === '.idata') return 'Import directory / IAT bindings';
+  if (name === '.edata') return 'Export directory table';
+  return 'Application data / runtime section or package group';
+}
+
+/**
+ * Generates a comprehensive, self-contained Markdown reverse-engineering report
+ * formatted for immediate ingestion by Antigravity AI coding/security agents.
+ */
+function generateAntigravityReport(analysisData, options = {}) {
+  const data = analysisData || {};
+  const target = data.target || {};
+  const functions = Array.isArray(data.functions) ? data.functions : [];
+  const imports = Array.isArray(data.imports) ? data.imports : [];
+  const strings = Array.isArray(data.strings) ? data.strings : [];
+
+  const includeAll = Boolean(options.includeAllDecompiled);
+  const maxFunctionsInTable = options.maxFunctionsInTable || (includeAll ? functions.length || 500 : 80);
+  const maxDecompiledFunctions = options.maxDecompiledFunctions || (includeAll ? functions.length || 500 : 15);
+  const maxImports = options.maxImports || (includeAll ? imports.length || 5000 : 200);
+  const maxStringsPerCategory = options.maxStringsPerCategory || (includeAll ? 250 : 50);
+
+  const inspectedAt = data.inspectedAt || new Date().toISOString();
+  const targetName = target.name || 'unknown-target';
+  const lines = [];
+
+  // Antigravity AI Ingestion Header
+  lines.push(`# 🛡️ AegisRE Full Reverse-Engineering Report: ${targetName}`);
+  lines.push('');
+  lines.push('> **Antigravity AI Context Header**');
+  lines.push(`> - **Target**: \`${targetName}\` (\`${target.path || 'unknown'}\`)`);
+  lines.push(`> - **Format / Arch**: ${target.format || 'Unknown'} | ${target.arch || 'Unknown'} | ${target.subsystem || 'Unknown'}`);
+  lines.push(`> - **Inspected At**: \`${inspectedAt}\``);
+  lines.push(`> - **SHA-256**: \`${target.hashes?.sha256 || 'N/A'}\``);
+  if (data.savedReportPath || data.antigravityReportPath) {
+    lines.push(`> - **Report File**: \`${data.savedReportPath || data.antigravityReportPath}\``);
+  }
+  lines.push('');
+  lines.push(
+    'All facts below are static observations extracted directly from the shipped binary or package (file headers, section tables, import/export directories, `.pdata` function unwind table, x86_64 disassembly, Ghidra-style C pseudocode lifting, and encoded strings). Treat inferred plain-English labels and lifted C pseudocode as static reconstructions requiring verification against live execution if needed.'
+  );
+  lines.push('');
+
+  // Section 1 — Target Identity, Security Mitigations & Cryptographic Evidence
+  lines.push('## 1. Target Identity, Security Mitigations & Cryptographic Evidence');
+  lines.push('');
+  lines.push('| Property | Observed Value |');
+  lines.push('| :--- | :--- |');
+  lines.push(`| File Name | \`${escapeMdCell(targetName)}\` |`);
+  lines.push(`| Full Path | \`${escapeMdCell(target.path || 'N/A')}\` |`);
+  lines.push(`| Format | ${escapeMdCell(target.format || 'Unknown')} |`);
+  lines.push(`| Plain Description | ${escapeMdCell(target.plainFormat || target.format || 'Unknown')} |`);
+  lines.push(`| Architecture | ${escapeMdCell(target.arch || 'Unknown')} |`);
+  lines.push(`| Subsystem / Runtime | ${escapeMdCell(target.subsystem || 'Unknown')} |`);
+  lines.push(`| File Size | ${escapeMdCell(target.sizeFormatted || `${target.size || 0} B`)} (${Number(target.size || 0).toLocaleString()} bytes) |`);
+  lines.push(`| Compile / Modified Date | ${escapeMdCell(target.compileDate || 'N/A')} |`);
+  lines.push(`| Image Base | \`${escapeMdCell(target.imageBase || '0x0')}\` |`);
+  lines.push(`| Entry Point | \`${escapeMdCell(target.entryPoint || '0x0')}\` |`);
+  lines.push(`| Discovered Subroutines / Entries | ${Number(target.totalFunctionsDiscovered || functions.length).toLocaleString()} (${functions.length} decoded in workspace) |`);
+  lines.push(`| Imported APIs / DLLs | ${imports.length.toLocaleString()} APIs across ${Number(target.totalDllsImported || 0).toLocaleString()} module(s) |`);
+  lines.push(`| Entropy & Packing Verdict | ${target.entropy ?? 'N/A'}/8.0 — ${target.isPacked ? '⚠️ Packed / Compressed / Encrypted' : '✅ Unpacked / Directly Inspectable'} |`);
+  lines.push(`| Security Mitigations | ${escapeMdCell((target.securityFeatures || ['None detected']).join(', '))} |`);
+  lines.push(`| SHA-256 | \`${escapeMdCell(target.hashes?.sha256 || 'N/A')}\` |`);
+  lines.push(`| MD5 | \`${escapeMdCell(target.hashes?.md5 || 'N/A')}\` |`);
+  lines.push('');
+
+  // Section 2 — Executive Plain-English Architecture & Capabilities
+  lines.push('## 2. Executive Plain-English Architecture & Capabilities');
+  lines.push('');
+  lines.push(target.summary || 'No summary available.');
+  lines.push('');
+  if (Array.isArray(target.capabilities) && target.capabilities.length > 0) {
+    for (const cap of target.capabilities) {
+      lines.push(`### ${cap.title} (${cap.count} signal${cap.count === 1 ? '' : 's'})`);
+      for (const ex of cap.examples || []) {
+        lines.push(`- ${ex}`);
+      }
+      lines.push('');
+    }
+  } else {
+    lines.push('_No high-level capability groups were derived from imports or embedded indicators._');
+    lines.push('');
+  }
+
+  // Section 3 — Binary Memory Map / Package Sections & Exported Symbols
+  lines.push('## 3. Binary Memory Map / Package Sections & Exported Symbols');
+  lines.push('');
+  const secDetails = Array.isArray(target.sectionDetails) ? target.sectionDetails : [];
+  if (secDetails.length > 0) {
+    lines.push(`### Memory & Container Sections (${secDetails.length})`);
+    lines.push('');
+    lines.push('| Section | Virtual Address / Tag | Virtual Size | Raw File Offset | Raw Size | Purpose |');
+    lines.push('| :--- | :--- | ---: | :--- | ---: | :--- |');
+    for (const sec of secDetails) {
+      lines.push(
+        `| \`${escapeMdCell(sec.name)}\` | \`${escapeMdCell(sec.address)}\` | ${Number(sec.vSize ?? sec.size ?? 0).toLocaleString()} B | \`0x${Number(sec.rawPtr || 0).toString(16).toUpperCase()}\` | ${Number(sec.rawSize ?? sec.size ?? 0).toLocaleString()} B | ${escapeMdCell(describeSectionPurpose(sec.name))} |`
+      );
+    }
+    lines.push('');
+  } else {
+    lines.push('_No section headers parsed for this file format._');
+    lines.push('');
+  }
+
+  const exportsList = Array.isArray(target.exports) ? target.exports : [];
+  if (exportsList.length > 0) {
+    const shownExports = includeAll ? exportsList : exportsList.slice(0, 100);
+    lines.push(`### Exported Symbols / Package Entries (${exportsList.length} total, showing ${shownExports.length})`);
+    lines.push('');
+    lines.push('| Symbol / Entry Name | Virtual Address / Offset | RVA |');
+    lines.push('| :--- | :--- | :--- |');
+    for (const exp of shownExports) {
+      lines.push(
+        `| \`${escapeMdCell(exp.name)}\` | \`${escapeMdCell(exp.address)}\` | \`0x${Number(exp.rva || 0).toString(16).toUpperCase()}\` |`
+      );
+    }
+    lines.push('');
+  }
+
+  // Section 4 — Function Symbol Tree
+  lines.push('## 4. Function Symbol Tree');
+  lines.push('');
+  if (functions.length > 0) {
+    const tableFns = functions.slice(0, maxFunctionsInTable);
+    lines.push(
+      `Showing ${tableFns.length} of ${functions.length} decoded routines (${Number(target.totalFunctionsDiscovered || functions.length).toLocaleString()} total discovered).`
+    );
+    lines.push('');
+    lines.push('| Function Name | Virtual Address | Size (Bytes) | Calls | Category | Description |');
+    lines.push('| :--- | :--- | ---: | ---: | :--- | :--- |');
+    for (const fn of tableFns) {
+      lines.push(
+        `| \`${escapeMdCell(fn.name)}\` | \`${escapeMdCell(fn.address)}\` | ${Number(fn.size || 0).toLocaleString()} | ${Number(fn.calls || 0)} | ${escapeMdCell(fn.category || 'Code')} | ${escapeMdCell(fn.plainTitle || fn.plainExplanation || '')} |`
+      );
+    }
+    lines.push('');
+  } else {
+    lines.push('_No native subroutines decoded for this target._');
+    lines.push('');
+  }
+
+  // Section 5 — Decompiled C Pseudocode & x86_64 Disassembly (Key Routines)
+  lines.push('## 5. Decompiled C Pseudocode & x86_64 Disassembly (Key Routines)');
+  lines.push('');
+  if (functions.length > 0) {
+    const priorityNames = new Set(['entry', 'WinMain', 'main', '__scrt_common_main_seh', '__security_init_cookie', 'package.json']);
+    const selectedFns = [];
+    const seenAddrs = new Set();
+
+    const addFn = (fn) => {
+      if (!fn || selectedFns.length >= maxDecompiledFunctions) return;
+      const key = `${fn.address}:${fn.name}`;
+      if (seenAddrs.has(key)) return;
+      seenAddrs.add(key);
+      selectedFns.push(fn);
+    };
+
+    for (const fn of functions) {
+      if (priorityNames.has(fn.name)) addFn(fn);
+    }
+    for (const fn of functions) {
+      if (fn.category === 'Direct Address Lookup' || fn.category === 'Exported Symbol' || fn.category === 'ASAR Manifest' || fn.category === 'ASAR Module' || fn.category === 'Package Member') {
+        addFn(fn);
+      }
+    }
+    for (const fn of functions) {
+      addFn(fn);
+    }
+
+    lines.push(`Detailed decompilation and instruction trace for ${selectedFns.length} key routine(s):`);
+    lines.push('');
+
+    for (const fn of selectedFns) {
+      lines.push(`### \`${fn.name}\` (\`${fn.address}\`)`);
+      lines.push('');
+      lines.push(`- **Size**: ${Number(fn.size || 0).toLocaleString()} bytes | **Calls**: ${Number(fn.calls || 0)} | **Category**: ${fn.category || 'Code'}`);
+      if (fn.signature) {
+        lines.push(`- **Signature**: \`${fn.signature}\``);
+      }
+      if (fn.plainExplanation) {
+        lines.push(`- **Summary**: ${fn.plainExplanation}`);
+      }
+      lines.push('');
+      if (fn.decompiled) {
+        const lang = fn.category === 'ASAR Manifest' ? 'json' : fn.category === 'ASAR Module' ? 'javascript' : 'c';
+        lines.push(`\`\`\`${lang}`);
+        lines.push(fn.decompiled.trimEnd());
+        lines.push('```');
+        lines.push('');
+      }
+      if (Array.isArray(fn.disassembly) && fn.disassembly.length > 0) {
+        const insnLimit = includeAll ? fn.disassembly.length : Math.min(fn.disassembly.length, 60);
+        lines.push(`**x86_64 Disassembly** (${insnLimit} of ${fn.disassembly.length} decoded instructions):`);
+        lines.push('');
+        lines.push('```x86asm');
+        for (let i = 0; i < insnLimit; i++) {
+          const insn = fn.disassembly[i];
+          const mnemAndOps = `${insn.mnemonic}${insn.operands ? ' ' + insn.operands : ''}`;
+          const cmt = insn.comment ? ` ; ${insn.comment}` : '';
+          lines.push(`${insn.address}  ${String(insn.bytes || '').padEnd(24, ' ')}  ${mnemAndOps}${cmt}`);
+        }
+        if (fn.disassembly.length > insnLimit) {
+          lines.push(`; ... (${fn.disassembly.length - insnLimit} additional instructions omitted; enable Exhaustive Mode for full listing)`);
+        }
+        lines.push('```');
+        lines.push('');
+      }
+    }
+  } else {
+    lines.push('_No decompiled code or disassembly listings available for this target._');
+    lines.push('');
+  }
+
+  // Section 6 — Imported DLLs & API Behavioral Matrix
+  lines.push('## 6. Imported DLLs & API Behavioral Matrix');
+  lines.push('');
+  if (imports.length > 0) {
+    const dllCounts = new Map();
+    for (const imp of imports) {
+      const dll = imp.dll || 'UNKNOWN';
+      dllCounts.set(dll, (dllCounts.get(dll) || 0) + 1);
+    }
+    const dllSummary = Array.from(dllCounts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([dll, count]) => `\`${dll}\` (${count})`)
+      .join(', ');
+    lines.push(`**Imported Modules (${dllCounts.size}):** ${dllSummary}`);
+    lines.push('');
+
+    const prioritizedImports = [...imports].sort((a, b) => {
+      const score = (c) => (c && c !== 'System & Runtime' ? 0 : 1);
+      return score(a.category) - score(b.category);
+    });
+    const shownImports = prioritizedImports.slice(0, maxImports);
+    lines.push(`Showing ${shownImports.length} of ${imports.length} imported APIs:`);
+    lines.push('');
+    lines.push('| IAT Address | Module / API | Category | Plain-English Behavior |');
+    lines.push('| :--- | :--- | :--- | :--- |');
+    for (const imp of shownImports) {
+      lines.push(
+        `| \`${escapeMdCell(imp.address)}\` | \`${escapeMdCell(imp.dll)}!${escapeMdCell(imp.function)}\` | ${escapeMdCell(imp.category || 'System')} | ${escapeMdCell(imp.plain || '')} |`
+      );
+    }
+    lines.push('');
+  } else {
+    lines.push('_No imported APIs or runtime indicators detected._');
+    lines.push('');
+  }
+
+  // Section 7 — Extracted Strings, Endpoints & Engine Clues
+  lines.push('## 7. Extracted Strings, Endpoints & Engine Clues');
+  lines.push('');
+  if (strings.length > 0) {
+    const stringCategories = [
+      { key: 'Web Link / URL', heading: '🌐 Web Links & Server Endpoints' },
+      { key: 'Audio, GPU & Engine Clues', heading: '🎛️ Audio, GPU, Shaders & Engine Clues' },
+      { key: 'File Path / System Setting', heading: '📁 File Paths, Registry Keys & Modules' },
+      { key: 'Notable Keyword / Command', heading: '🔑 Licensing, Security, Commands & Diagnostics' },
+      { key: 'App Text', heading: '📝 Application Text & Identifiers' },
+    ];
+    for (const cat of stringCategories) {
+      const group = strings.filter((s) => s.section === cat.key);
+      if (group.length === 0) continue;
+      const shown = group.slice(0, maxStringsPerCategory);
+      lines.push(`### ${cat.heading} (${group.length} total, showing ${shown.length})`);
+      lines.push('');
+      lines.push('| Offset | Encoding | Value | Meaning |');
+      lines.push('| :--- | :--- | :--- | :--- |');
+      for (const s of shown) {
+        lines.push(
+          `| \`${escapeMdCell(s.offset)}\` | ${escapeMdCell(s.type)} | \`${escapeMdCell(s.value)}\` | ${escapeMdCell(s.plain || '')} |`
+        );
+      }
+      lines.push('');
+    }
+  } else {
+    lines.push('_No readable ASCII or UTF-16LE strings extracted._');
+    lines.push('');
+  }
+
+  // Section 8 — Header Hex Preview
+  lines.push('## 8. Header Hex Preview');
+  lines.push('');
+  lines.push('```text');
+  lines.push(target.hexPreview || 'No hex preview available.');
+  lines.push('```');
+  lines.push('');
+
+  // Section 9 — Suggested Antigravity Tasks & Follow-Up Prompts
+  lines.push('## 9. Suggested Antigravity Tasks & Follow-Up Prompts');
+  lines.push('');
+  lines.push(`Copy or adapt any of the prompts below when feeding this report into **Antigravity** for \`${targetName}\`:`);
+  lines.push('');
+  lines.push(`1. **Architecture & Feature Reconstruction**: *"Using this AegisRE report for \`${targetName}\`, map out its main subsystems, entry flow, third-party dependencies, and reconstruct a clean high-level specification or source skeleton."*`);
+  lines.push(`2. **Security & Privacy Audit**: *"Review the security mitigations, imported APIs, URLs, Registry paths, and licensing/crypto clues in this \`${targetName}\` report. Identify attack surface, network telemetry, privilege requirements, and hardening gaps."*`);
+  lines.push(`3. **Interop, Hooking & Plugin Integration**: *"Based on the exported symbols, IAT addresses, and calling conventions in this report for \`${targetName}\`, generate safe wrapper/interop bindings or diagnostic instrumentation."*`);
+  lines.push(`4. **Deeper Address Investigation**: *"Identify the highest-value addresses or virtual functions referenced in Section 5 and Section 6 that I should disassemble next using AegisRE's Go To Address decoder or MCP tools (\`aegis_inspect_file\`)."*`);
+  lines.push('');
+
+  return lines.join('\n');
+}
+
 module.exports = {
   analyzeBinaryTarget,
   disassembleFunctionAtAddress,
   detectGhidraInstallation,
+  generateAntigravityReport,
 };

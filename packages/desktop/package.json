@@ -1,6 +1,6 @@
 {
   "name": "@aegis-re/desktop",
-  "version": "1.1.2",
+  "version": "1.2.0",
   "description": "AegisRE Desktop GUI & Ghidra Decompiler Studio",
   "private": true,
   "main": "dist-electron/main.cjs",

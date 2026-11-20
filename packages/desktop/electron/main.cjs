@@ -6,6 +6,7 @@ const {
   analyzeBinaryTarget,
   disassembleFunctionAtAddress,
   detectGhidraInstallation,
+  generateAntigravityReport,
 } = require('./disassembler.cjs');
 
 let mainWindow = null;
@@ -384,12 +385,56 @@ ipcMain.handle('dialog:openFile', async () => {
   };
 });
 
+function writeAntigravityBridgeFiles(analysisResult, options = {}) {
+  const bridgeDir = getAegisConfigDir();
+  const reportsDir = path.join(bridgeDir, 'reports');
+  fs.mkdirSync(reportsDir, { recursive: true });
+
+  const safeName = String(analysisResult?.target?.name || 'target').replace(/[^a-zA-Z0-9._-]+/g, '_');
+  const bridgeFile = path.join(bridgeDir, 'latest-target.json');
+  const latestReportFile = path.join(bridgeDir, 'latest-report.md');
+  const namedReportFile = path.join(reportsDir, `${safeName}-antigravity-report.md`);
+
+  analysisResult.antigravityBridgePath = bridgeFile;
+  analysisResult.antigravityReportPath = latestReportFile;
+  analysisResult.savedReportPath = namedReportFile;
+
+  const reportMarkdown = generateAntigravityReport(analysisResult, options);
+  fs.writeFileSync(latestReportFile, reportMarkdown, 'utf8');
+  fs.writeFileSync(namedReportFile, reportMarkdown, 'utf8');
+
+  const { reportMarkdown: _omitReport, ...jsonPayload } = analysisResult;
+  fs.writeFileSync(
+    bridgeFile,
+    JSON.stringify({ inspectedAt: analysisResult.inspectedAt || new Date().toISOString(), ...jsonPayload }, null, 2),
+    'utf8'
+  );
+
+  analysisResult.reportMarkdown = reportMarkdown;
+  return {
+    reportMarkdown,
+    bridgeFile,
+    latestReportFile,
+    namedReportFile,
+  };
+}
+
 ipcMain.handle('aegis:getLatestTarget', async () => {
   try {
     const bridgeFile = path.join(getAegisConfigDir(), 'latest-target.json');
     if (fs.existsSync(bridgeFile)) {
       const data = JSON.parse(fs.readFileSync(bridgeFile, 'utf8'));
       if (data && data.success && data.target) {
+        if (!data.antigravityReportPath) {
+          data.antigravityReportPath = path.join(getAegisConfigDir(), 'latest-report.md');
+        }
+        if (!data.savedReportPath) {
+          const safeName = String(data.target.name || 'target').replace(/[^a-zA-Z0-9._-]+/g, '_');
+          data.savedReportPath = path.join(getAegisConfigDir(), 'reports', `${safeName}-antigravity-report.md`);
+        }
+        if (!data.reportMarkdown) {
+          data.reportMarkdown = generateAntigravityReport(data);
+        }
         return data;
       }
     }
@@ -407,17 +452,9 @@ ipcMain.handle('aegis:analyzeTarget', async (event, filePath) => {
     }
     const result = analyzeBinaryTarget(filePath);
     try {
-      const bridgeDir = getAegisConfigDir();
-      fs.mkdirSync(bridgeDir, { recursive: true });
-      const bridgeFile = path.join(bridgeDir, 'latest-target.json');
-      fs.writeFileSync(
-        bridgeFile,
-        JSON.stringify({ inspectedAt: new Date().toISOString(), ...result }, null, 2),
-        'utf8'
-      );
-      result.antigravityBridgePath = bridgeFile;
+      writeAntigravityBridgeFiles(result);
     } catch (bridgeErr) {
-      console.error('Failed writing Antigravity bridge file:', bridgeErr);
+      console.error('Failed writing Antigravity bridge files:', bridgeErr);
     }
     return result;
   } catch (err) {
@@ -425,6 +462,66 @@ ipcMain.handle('aegis:analyzeTarget', async (event, filePath) => {
       success: false,
       error: err.message || String(err),
     };
+  }
+});
+
+ipcMain.handle('aegis:generateReport', async (event, { analysisData, options } = {}) => {
+  try {
+    if (!analysisData || !analysisData.target) {
+      return { success: false, error: 'No analyzed target provided to generate report.' };
+    }
+    const payload = { ...analysisData };
+    const written = writeAntigravityBridgeFiles(payload, options || {});
+    return {
+      success: true,
+      reportMarkdown: written.reportMarkdown,
+      reportPath: written.latestReportFile,
+      savedReportPath: written.namedReportFile,
+    };
+  } catch (err) {
+    return { success: false, error: err.message || String(err) };
+  }
+});
+
+ipcMain.handle('aegis:saveReport', async (event, { reportMarkdown, analysisData, defaultFileName, format } = {}) => {
+  try {
+    const isJson = format === 'json';
+    const baseTarget = String(analysisData?.target?.name || 'target').replace(/[^a-zA-Z0-9._-]+/g, '_');
+    const suggestedName = defaultFileName || `${baseTarget}-antigravity-report.${isJson ? 'json' : 'md'}`;
+
+    const filters = isJson
+      ? [
+          { name: 'JSON Analysis Bundle (.json)', extensions: ['json'] },
+          { name: 'Markdown Report (.md)', extensions: ['md'] },
+          { name: 'All Files (*.*)', extensions: ['*'] },
+        ]
+      : [
+          { name: 'Markdown Report (.md)', extensions: ['md'] },
+          { name: 'Plain Text Report (.txt)', extensions: ['txt'] },
+          { name: 'JSON Analysis Bundle (.json)', extensions: ['json'] },
+        ];
+
+    const saveResult = await dialog.showSaveDialog(mainWindow, {
+      title: 'Save Antigravity Reverse-Engineering Report',
+      defaultPath: path.join(app.getPath('documents'), suggestedName),
+      filters,
+    });
+
+    if (saveResult.canceled || !saveResult.filePath) {
+      return { success: false, canceled: true };
+    }
+
+    const chosenExt = path.extname(saveResult.filePath).toLowerCase();
+    if (isJson || chosenExt === '.json') {
+      fs.writeFileSync(saveResult.filePath, JSON.stringify(analysisData || {}, null, 2), 'utf8');
+    } else {
+      const content = reportMarkdown || generateAntigravityReport(analysisData || {});
+      fs.writeFileSync(saveResult.filePath, content, 'utf8');
+    }
+
+    return { success: true, filePath: saveResult.filePath };
+  } catch (err) {
+    return { success: false, error: err.message || String(err) };
   }
 });
 

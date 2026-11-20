@@ -20,6 +20,9 @@ import {
   Layers,
   Code2,
   ArrowRight,
+  FileText,
+  Download,
+  Bot,
 } from 'lucide-react';
 
 type ThemeMode = 'dark' | 'light';
@@ -82,9 +85,16 @@ export default function App() {
   const [functions, setFunctions] = useState<any[]>([]);
   const [strings, setStrings] = useState<any[]>([]);
   const [imports, setImports] = useState<any[]>([]);
+  const [inspectedAt, setInspectedAt] = useState<string>('');
+  const [reportMarkdown, setReportMarkdown] = useState<string>('');
+  const [reportPath, setReportPath] = useState<string>('');
+  const [savedReportPath, setSavedReportPath] = useState<string>('');
+  const [includeAllDecompiled, setIncludeAllDecompiled] = useState<boolean>(false);
+  const [reportFeedback, setReportFeedback] = useState<string>('');
+  const [generatingReport, setGeneratingReport] = useState<boolean>(false);
   const [selectedFunc, setSelectedFunc] = useState<any>(null);
   const [activeTab, setActiveTab] = useState<
-    'overview' | 'decompile' | 'disassembly' | 'strings' | 'imports' | 'sections' | 'hex'
+    'overview' | 'decompile' | 'disassembly' | 'strings' | 'imports' | 'sections' | 'hex' | 'report'
   >('overview');
 
   const [stringCategoryFilter, setStringCategoryFilter] = useState<string>('ALL');
@@ -94,7 +104,7 @@ export default function App() {
   const [importSearch, setImportSearch] = useState('');
   const [customAddressInput, setCustomAddressInput] = useState('');
   const [copied, setCopied] = useState(false);
-  const [appVersion, setAppVersion] = useState('1.1.0');
+  const [appVersion, setAppVersion] = useState('1.2.0');
   const [analysisError, setAnalysisError] = useState<string>('');
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
 
@@ -112,6 +122,27 @@ export default function App() {
   useEffect(() => {
     if (window.aegis?.getVersion) {
       window.aegis.getVersion().then(setAppVersion);
+    }
+
+    if (window.aegis?.getLatestTarget) {
+      window.aegis.getLatestTarget().then((data: any) => {
+        if (data && data.success && data.target) {
+          setTarget((prev: any) => {
+            if (prev) return prev;
+            const fns = data.functions || [];
+            setFunctions(fns);
+            setStrings(data.strings || []);
+            setImports(data.imports || []);
+            setInspectedAt(data.inspectedAt || '');
+            setReportMarkdown(data.reportMarkdown || '');
+            setReportPath(data.antigravityReportPath || '');
+            setSavedReportPath(data.savedReportPath || '');
+            const wm = fns.find((f: any) => f.name === 'WinMain');
+            setSelectedFunc(wm || fns[0] || null);
+            return data.target;
+          });
+        }
+      });
     }
 
     if (window.aegis?.getTheme) {
@@ -201,6 +232,12 @@ export default function App() {
         setFunctions(res.functions || []);
         setStrings(res.strings || []);
         setImports(res.imports || []);
+        setInspectedAt(res.inspectedAt || new Date().toISOString());
+        setReportMarkdown(res.reportMarkdown || '');
+        setReportPath(res.antigravityReportPath || '');
+        setSavedReportPath(res.savedReportPath || '');
+        setIncludeAllDecompiled(false);
+        setReportFeedback('');
         setActiveTab('overview');
         // Default select WinMain if discovered, otherwise entry
         const winMainFn = (res.functions || []).find((f: any) => f.name === 'WinMain');
@@ -235,15 +272,99 @@ export default function App() {
     if (window.aegis?.disassembleAt) {
       const res = await window.aegis.disassembleAt(target.path, addr, 512);
       if (res && res.success && res.function) {
-        setFunctions((prev) => [res.function, ...prev]);
+        const updatedFns = [res.function, ...functions];
+        setFunctions(updatedFns);
         setSelectedFunc(res.function);
         if (activeTab !== 'disassembly' && activeTab !== 'decompile') {
           setActiveTab('decompile');
         }
         setCustomAddressInput('');
+        refreshAntigravityReport(includeAllDecompiled, updatedFns);
       } else {
         setAnalysisError(res?.error || `Could not disassemble at ${addr}`);
       }
+    }
+  };
+
+  const showTempReportFeedback = (msg: string) => {
+    setReportFeedback(msg);
+    setTimeout(() => {
+      setReportFeedback((curr) => (curr === msg ? '' : curr));
+    }, 4500);
+  };
+
+  const buildAnalysisPayload = (fnsOverride?: any[]) => ({
+    success: true,
+    inspectedAt: inspectedAt || new Date().toISOString(),
+    target,
+    functions: fnsOverride || functions,
+    strings,
+    imports,
+    antigravityReportPath: reportPath,
+    savedReportPath,
+  });
+
+  const refreshAntigravityReport = async (includeAllOverride?: boolean, fnsOverride?: any[]) => {
+    if (!target || !window.aegis?.generateReport) return '';
+    const useAll = typeof includeAllOverride === 'boolean' ? includeAllOverride : includeAllDecompiled;
+    setGeneratingReport(true);
+    try {
+      const res = await window.aegis.generateReport(buildAnalysisPayload(fnsOverride), {
+        includeAllDecompiled: useAll,
+      });
+      if (res && res.success) {
+        setReportMarkdown(res.reportMarkdown || '');
+        if (res.reportPath) setReportPath(res.reportPath);
+        if (res.savedReportPath) setSavedReportPath(res.savedReportPath);
+        return res.reportMarkdown || '';
+      } else if (res?.error) {
+        setAnalysisError(res.error);
+      }
+    } catch (err: any) {
+      setAnalysisError(err?.message || 'Failed to generate Antigravity report.');
+    } finally {
+      setGeneratingReport(false);
+    }
+    return '';
+  };
+
+  const copyFullReport = async () => {
+    if (!target) return;
+    let md = reportMarkdown;
+    if (!md) {
+      md = await refreshAntigravityReport();
+    }
+    if (!md) return;
+    await navigator.clipboard.writeText(md);
+    showTempReportFeedback('✅ Full Reverse-Engineering Report copied to clipboard! Paste (Ctrl+V) directly into Antigravity.');
+  };
+
+  const copyAntigravityPrompt = async () => {
+    if (!target) return;
+    if (!savedReportPath && !reportPath) {
+      await refreshAntigravityReport();
+    }
+    const pathRef = savedReportPath || reportPath;
+    const promptText = `Please read the full AegisRE reverse-engineering report for "${target.name}" at:\n${pathRef}\n\nAnalyze its architecture, subsystems, imported APIs, decompiled routines, and embedded strings/endpoints, then summarize everything clearly and let me know what we can build, inspect, or audit next.`;
+    await navigator.clipboard.writeText(promptText);
+    showTempReportFeedback('✅ Antigravity file-reference prompt copied! Paste it into Antigravity so it reads the saved report directly.');
+  };
+
+  const saveReportToFile = async (format: 'md' | 'json') => {
+    if (!target || !window.aegis?.saveReport) return;
+    let md = reportMarkdown;
+    if (!md && format !== 'json') {
+      md = await refreshAntigravityReport();
+    }
+    const res = await window.aegis.saveReport({
+      reportMarkdown: md,
+      analysisData: buildAnalysisPayload(),
+      format,
+    });
+    if (res && res.success && res.filePath) {
+      showTempReportFeedback(`💾 Saved ${format === 'json' ? 'JSON analysis bundle' : 'Markdown report'} to: ${res.filePath}`);
+    } else if (res && !res.canceled && res.error) {
+      setAnalysisError(res.error);
     }
   };
 
@@ -418,6 +539,30 @@ export default function App() {
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', WebkitAppRegion: 'no-drag' as any }}>
+          {target && (
+            <button
+              onClick={() => {
+                setActiveTab('report');
+                if (!reportMarkdown) refreshAntigravityReport();
+              }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                fontSize: '12px',
+                backgroundColor: '#16a34a',
+                color: '#ffffff',
+                border: '1px solid #22c55e',
+                padding: '6px 12px',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                fontWeight: 600,
+              }}
+            >
+              <Bot style={{ width: '14px', height: '14px' }} />
+              <span>Feed to Antigravity (Report)</span>
+            </button>
+          )}
           {/* Light / Dark Mode Toggle */}
           <button
             onClick={toggleTheme}
@@ -840,6 +985,7 @@ export default function App() {
                   { id: 'strings', label: `🔍 5. Strings (${strings.length})` },
                   { id: 'sections', label: `📦 6. PE Sections & Exports (${target.sectionDetails?.length || 0})` },
                   { id: 'hex', label: '🔢 7. Raw Hex' },
+                  { id: 'report', label: '🤖 8. Antigravity Report' },
                 ].map((tab) => (
                   <button
                     key={tab.id}
@@ -887,7 +1033,25 @@ export default function App() {
                         <Sparkles style={{ width: '15px', height: '15px' }} />
                         Executive Binary Triage & Architecture Summary
                       </div>
-                      <div style={{ display: 'flex', gap: '8px' }}>
+                      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                        <button
+                          onClick={() => {
+                            setActiveTab('report');
+                            copyFullReport();
+                          }}
+                          style={{
+                            fontSize: '11px',
+                            fontWeight: 600,
+                            padding: '4px 10px',
+                            borderRadius: '6px',
+                            backgroundColor: '#16a34a',
+                            color: '#ffffff',
+                            border: 'none',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          🤖 Generate &amp; Copy Antigravity Report →
+                        </button>
                         <button
                           onClick={() => {
                             const wm = functions.find((f) => f.name === 'WinMain') || functions[0];
@@ -1594,6 +1758,284 @@ export default function App() {
                     }}
                   >
                     <code>{target.hexPreview || 'No hex preview available.'}</code>
+                  </pre>
+                </div>
+              )}
+
+              {/* TAB 8: ANTIGRAVITY REPORT */}
+              {activeTab === 'report' && (
+                <div style={{ display: 'flex', flexDirection: 'column', height: '100%', gap: '14px' }}>
+                  <div
+                    style={{
+                      backgroundColor: colors.bgSecondary,
+                      border: `1px solid ${colors.accent}`,
+                      borderRadius: '12px',
+                      padding: '18px',
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'flex-start',
+                        flexWrap: 'wrap',
+                        gap: '12px',
+                        marginBottom: '12px',
+                      }}
+                    >
+                      <div>
+                        <div style={{ fontSize: '11px', fontWeight: 700, color: colors.accentText, textTransform: 'uppercase', marginBottom: '4px' }}>
+                          🤖 Antigravity Full Reverse-Engineering Report Generator
+                        </div>
+                        <div style={{ fontSize: '13px', color: colors.textSecondary }}>
+                          Complete self-contained Markdown &amp; JSON intelligence dossier ready to paste or reference directly in <strong>Antigravity</strong>.
+                        </div>
+                      </div>
+                      <label
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px',
+                          fontSize: '12px',
+                          color: colors.textPrimary,
+                          cursor: 'pointer',
+                          backgroundColor: colors.bgTertiary,
+                          padding: '6px 11px',
+                          borderRadius: '7px',
+                          border: `1px solid ${colors.borderStrong}`,
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={includeAllDecompiled}
+                          onChange={async (e) => {
+                            const next = e.target.checked;
+                            setIncludeAllDecompiled(next);
+                            await refreshAntigravityReport(next);
+                            showTempReportFeedback(
+                              next
+                                ? '✅ Regenerated report in Exhaustive Mode (all discovered functions & full API table).'
+                                : '✅ Regenerated report in Standard Mode.'
+                            );
+                          }}
+                        />
+                        <span>Exhaustive Mode (All {functions.length} functions &amp; full API table)</span>
+                      </label>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
+                      <button
+                        onClick={copyFullReport}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          padding: '7px 13px',
+                          borderRadius: '6px',
+                          fontSize: '12px',
+                          fontWeight: 600,
+                          backgroundColor: colors.accentBg,
+                          color: '#ffffff',
+                          border: 'none',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <Copy style={{ width: '13px', height: '13px' }} />
+                        <span>Copy Full Report for Antigravity</span>
+                      </button>
+
+                      <button
+                        onClick={copyAntigravityPrompt}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          padding: '7px 13px',
+                          borderRadius: '6px',
+                          fontSize: '12px',
+                          fontWeight: 600,
+                          backgroundColor: '#16a34a',
+                          color: '#ffffff',
+                          border: 'none',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <Bot style={{ width: '13px', height: '13px' }} />
+                        <span>Copy Antigravity File Prompt</span>
+                      </button>
+
+                      <button
+                        onClick={() => saveReportToFile('md')}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          padding: '7px 13px',
+                          borderRadius: '6px',
+                          fontSize: '12px',
+                          fontWeight: 600,
+                          backgroundColor: colors.bgTertiary,
+                          color: colors.textSecondary,
+                          border: `1px solid ${colors.borderStrong}`,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <Download style={{ width: '13px', height: '13px' }} />
+                        <span>Save Report (.md)</span>
+                      </button>
+
+                      <button
+                        onClick={() => saveReportToFile('json')}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          padding: '7px 13px',
+                          borderRadius: '6px',
+                          fontSize: '12px',
+                          fontWeight: 600,
+                          backgroundColor: colors.bgTertiary,
+                          color: colors.textSecondary,
+                          border: `1px solid ${colors.borderStrong}`,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <FileText style={{ width: '13px', height: '13px' }} />
+                        <span>Save JSON Bundle (.json)</span>
+                      </button>
+
+                      <button
+                        onClick={() => refreshAntigravityReport()}
+                        disabled={generatingReport}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          padding: '7px 13px',
+                          borderRadius: '6px',
+                          fontSize: '12px',
+                          fontWeight: 600,
+                          backgroundColor: colors.bgTertiary,
+                          color: colors.textSecondary,
+                          border: `1px solid ${colors.borderStrong}`,
+                          cursor: generatingReport ? 'not-allowed' : 'pointer',
+                        }}
+                      >
+                        <RefreshCw style={{ width: '13px', height: '13px' }} />
+                        <span>{generatingReport ? 'Regenerating...' : 'Regenerate'}</span>
+                      </button>
+                    </div>
+
+                    {reportFeedback && (
+                      <div
+                        style={{
+                          backgroundColor: 'rgba(34, 197, 94, 0.14)',
+                          border: '1px solid rgba(34, 197, 94, 0.35)',
+                          borderRadius: '8px',
+                          padding: '10px 14px',
+                          marginBottom: '12px',
+                          fontSize: '12.5px',
+                          color: colors.success,
+                          fontWeight: 600,
+                        }}
+                      >
+                        {reportFeedback}
+                      </div>
+                    )}
+
+                    <div
+                      style={{
+                        backgroundColor: colors.bgTertiary,
+                        border: `1px solid ${colors.border}`,
+                        borderRadius: '8px',
+                        padding: '12px 14px',
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px', marginBottom: '10px' }}>
+                        <div style={{ fontSize: '12px', color: colors.textSecondary }}>
+                          <strong>Auto-Saved Bridge File:</strong>{' '}
+                          <code style={{ color: colors.accentText }}>{savedReportPath || reportPath || '(auto-saved on analysis)'}</code>
+                        </div>
+                        {(savedReportPath || reportPath) && (
+                          <button
+                            onClick={async () => {
+                              const p = savedReportPath || reportPath;
+                              await navigator.clipboard.writeText(p);
+                              showTempReportFeedback(`✅ Copied report file path: ${p}`);
+                            }}
+                            style={{
+                              padding: '4px 10px',
+                              borderRadius: '6px',
+                              fontSize: '11px',
+                              fontWeight: 600,
+                              backgroundColor: colors.bgSecondary,
+                              color: colors.textSecondary,
+                              border: `1px solid ${colors.borderStrong}`,
+                              cursor: 'pointer',
+                            }}
+                          >
+                            Copy File Path
+                          </button>
+                        )}
+                      </div>
+
+                      <div
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))',
+                          gap: '10px',
+                          paddingTop: '10px',
+                          borderTop: `1px solid ${colors.border}`,
+                        }}
+                      >
+                        <div>
+                          <div style={{ fontSize: '10.5px', color: colors.textMuted }}>Report Lines</div>
+                          <div style={{ fontSize: '14px', fontWeight: 700 }}>{(reportMarkdown ? reportMarkdown.split(/\r?\n/).length : 0).toLocaleString()}</div>
+                        </div>
+                        <div>
+                          <div style={{ fontSize: '10.5px', color: colors.textMuted }}>Characters</div>
+                          <div style={{ fontSize: '14px', fontWeight: 700 }}>{reportMarkdown.length.toLocaleString()}</div>
+                        </div>
+                        <div>
+                          <div style={{ fontSize: '10.5px', color: colors.textMuted }}>Est. AI Tokens</div>
+                          <div style={{ fontSize: '14px', fontWeight: 700, color: colors.accentText }}>
+                            ~{Math.round(reportMarkdown.length / 4).toLocaleString()}
+                          </div>
+                        </div>
+                        <div>
+                          <div style={{ fontSize: '10.5px', color: colors.textMuted }}>Decoded Functions</div>
+                          <div style={{ fontSize: '14px', fontWeight: 700 }}>{functions.length.toLocaleString()}</div>
+                        </div>
+                        <div>
+                          <div style={{ fontSize: '10.5px', color: colors.textMuted }}>Imported APIs</div>
+                          <div style={{ fontSize: '14px', fontWeight: 700 }}>{imports.length.toLocaleString()}</div>
+                        </div>
+                        <div>
+                          <div style={{ fontSize: '10.5px', color: colors.textMuted }}>Extracted Clues</div>
+                          <div style={{ fontSize: '14px', fontWeight: 700 }}>{strings.length.toLocaleString()}</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <pre
+                    style={{
+                      flex: 1,
+                      margin: 0,
+                      padding: '16px',
+                      backgroundColor: '#090d16',
+                      border: `1px solid ${colors.borderStrong}`,
+                      borderRadius: '8px',
+                      color: '#e2e8f0',
+                      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+                      fontSize: '12px',
+                      lineHeight: 1.6,
+                      overflow: 'auto',
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word',
+                    }}
+                  >
+                    <code>{reportMarkdown || 'Click Regenerate to build the full Antigravity report...'}</code>
                   </pre>
                 </div>
               )}

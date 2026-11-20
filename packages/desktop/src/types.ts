@@ -71,10 +71,15 @@ export interface ImportItem {
 
 export interface AnalysisResult {
   success: boolean;
+  inspectedAt?: string;
   target?: TargetAnalysis;
   functions?: FunctionItem[];
   strings?: StringItem[];
   imports?: ImportItem[];
+  reportMarkdown?: string;
+  antigravityBridgePath?: string;
+  antigravityReportPath?: string;
+  savedReportPath?: string;
   error?: string;
 }
 
@@ -82,12 +87,29 @@ declare global {
   interface Window {
     aegis?: {
       openFile: () => Promise<{ path: string; name: string; size: number; modified: number } | null>;
+      getLatestTarget?: () => Promise<AnalysisResult | null>;
       analyzeTarget: (filePath: string) => Promise<AnalysisResult>;
       disassembleAt?: (
         filePath: string,
         address: string,
         size?: number
       ) => Promise<{ success: boolean; function?: FunctionItem; error?: string }>;
+      generateReport?: (
+        analysisData: AnalysisResult,
+        options?: { includeAllDecompiled?: boolean }
+      ) => Promise<{
+        success: boolean;
+        reportMarkdown?: string;
+        reportPath?: string;
+        savedReportPath?: string;
+        error?: string;
+      }>;
+      saveReport?: (payload: {
+        reportMarkdown?: string;
+        analysisData?: AnalysisResult;
+        defaultFileName?: string;
+        format?: 'md' | 'json';
+      }) => Promise<{ success: boolean; filePath?: string; canceled?: boolean; error?: string }>;
       getGhidraStatus?: () => Promise<{ installed: boolean; path: string | null; headlessBat: string | null }>;
       getTheme?: () => Promise<'dark' | 'light'>;
       setTheme?: (theme: 'dark' | 'light') => Promise<{ success: boolean; theme: 'dark' | 'light' }>;

@@ -172,14 +172,21 @@
 
   <script>
     const state = {
-      appVersion: '1.1.2',
+      appVersion: '1.2.0',
       theme: localStorage.getItem('aegis_theme') || 'dark',
       target: null,
       functions: [],
       strings: [],
       imports: [],
+      inspectedAt: '',
+      reportMarkdown: '',
+      reportPath: '',
+      savedReportPath: '',
+      includeAllDecompiled: false,
+      reportFeedback: '',
+      generatingReport: false,
       selectedFunc: null,
-      activeTab: 'overview', // overview | decompile | disassembly | imports | strings | sections | hex
+      activeTab: 'overview', // overview | decompile | disassembly | imports | strings | sections | hex | report
       funcFilter: '',
       customAddress: '',
       stringCategory: 'ALL',
@@ -219,7 +226,7 @@
 
     if (window.aegis) {
       if (window.aegis.getVersion) {
-        window.aegis.getVersion().then(v => { state.appVersion = v || '1.1.2'; render(); });
+        window.aegis.getVersion().then(v => { state.appVersion = v || '1.2.0'; render(); });
       }
       if (window.aegis.getLatestTarget) {
         window.aegis.getLatestTarget().then(data => {
@@ -228,6 +235,10 @@
             state.functions = data.functions || [];
             state.strings = data.strings || [];
             state.imports = data.imports || [];
+            state.inspectedAt = data.inspectedAt || '';
+            state.reportMarkdown = data.reportMarkdown || '';
+            state.reportPath = data.antigravityReportPath || '';
+            state.savedReportPath = data.savedReportPath || '';
             const wm = state.functions.find(f => f.name === 'WinMain');
             state.selectedFunc = wm || state.functions[0] || null;
             render();
@@ -363,6 +374,12 @@
           state.functions = data.functions || [];
           state.strings = data.strings || [];
           state.imports = data.imports || [];
+          state.inspectedAt = data.inspectedAt || new Date().toISOString();
+          state.reportMarkdown = data.reportMarkdown || '';
+          state.reportPath = data.antigravityReportPath || '';
+          state.savedReportPath = data.savedReportPath || '';
+          state.includeAllDecompiled = false;
+          state.reportFeedback = '';
           const wm = state.functions.find(f => f.name === 'WinMain');
           state.selectedFunc = wm || state.functions[0] || null;
           state.activeTab = 'overview';
@@ -403,10 +420,135 @@
           }
           state.customAddress = '';
           render();
+          refreshAntigravityReport();
         } else {
           state.error = (res && res.error) || `Could not decode address ${addr}`;
           render();
         }
+      }
+    }
+
+    let reportFeedbackTimer = null;
+    function setReportFeedback(msg) {
+      state.reportFeedback = msg;
+      if (reportFeedbackTimer) clearTimeout(reportFeedbackTimer);
+      render();
+      reportFeedbackTimer = setTimeout(() => {
+        state.reportFeedback = '';
+        render();
+      }, 4500);
+    }
+
+    function buildCurrentAnalysisPayload() {
+      return {
+        success: true,
+        inspectedAt: state.inspectedAt || new Date().toISOString(),
+        target: state.target,
+        functions: state.functions,
+        strings: state.strings,
+        imports: state.imports,
+        antigravityReportPath: state.reportPath,
+        savedReportPath: state.savedReportPath,
+      };
+    }
+
+    async function refreshAntigravityReport(includeAllOverride) {
+      if (!state.target || !window.aegis || !window.aegis.generateReport) return;
+      const includeAll = typeof includeAllOverride === 'boolean' ? includeAllOverride : state.includeAllDecompiled;
+      state.generatingReport = true;
+      render();
+      try {
+        const res = await window.aegis.generateReport(buildCurrentAnalysisPayload(), {
+          includeAllDecompiled: includeAll,
+        });
+        if (res && res.success) {
+          state.reportMarkdown = res.reportMarkdown || '';
+          state.reportPath = res.reportPath || state.reportPath;
+          state.savedReportPath = res.savedReportPath || state.savedReportPath;
+        } else if (res && res.error) {
+          state.error = res.error;
+        }
+      } catch (err) {
+        state.error = (err && err.message) || 'Failed to generate Antigravity report.';
+      } finally {
+        state.generatingReport = false;
+        render();
+      }
+    }
+
+    async function toggleExhaustiveReport(checked) {
+      state.includeAllDecompiled = Boolean(checked);
+      await refreshAntigravityReport(state.includeAllDecompiled);
+      setReportFeedback(
+        state.includeAllDecompiled
+          ? '✅ Regenerated report in Exhaustive Mode (all discovered functions & full API matrix).'
+          : '✅ Regenerated report in Standard Mode.'
+      );
+    }
+
+    async function copyFullReport() {
+      if (!state.target) return;
+      if (!state.reportMarkdown) {
+        await refreshAntigravityReport();
+      }
+      if (!state.reportMarkdown) return;
+      try {
+        await navigator.clipboard.writeText(state.reportMarkdown);
+        setReportFeedback('✅ Full Reverse-Engineering Report copied to clipboard! Paste (Ctrl+V) directly into Antigravity.');
+      } catch (err) {
+        state.error = 'Clipboard copy failed: ' + ((err && err.message) || err);
+        render();
+      }
+    }
+
+    async function copyAntigravityPrompt() {
+      if (!state.target) return;
+      if (!state.savedReportPath && !state.reportPath) {
+        await refreshAntigravityReport();
+      }
+      const pathRef = state.savedReportPath || state.reportPath;
+      const promptText = `Please read the full AegisRE reverse-engineering report for "${state.target.name}" at:\n${pathRef}\n\nAnalyze its architecture, subsystems, imported APIs, decompiled routines, and embedded strings/endpoints, then summarize everything clearly and let me know what we can build, inspect, or audit next.`;
+      try {
+        await navigator.clipboard.writeText(promptText);
+        setReportFeedback('✅ Antigravity file-reference prompt copied! Paste it into Antigravity so it reads the saved report directly.');
+      } catch (err) {
+        state.error = 'Clipboard copy failed: ' + ((err && err.message) || err);
+        render();
+      }
+    }
+
+    async function copyReportFilePath() {
+      const pathRef = state.savedReportPath || state.reportPath;
+      if (!pathRef) return;
+      try {
+        await navigator.clipboard.writeText(pathRef);
+        setReportFeedback(`✅ Copied report file path: ${pathRef}`);
+      } catch (err) {
+        state.error = 'Clipboard copy failed: ' + ((err && err.message) || err);
+        render();
+      }
+    }
+
+    async function saveReportFile(format) {
+      if (!state.target || !window.aegis || !window.aegis.saveReport) return;
+      if (!state.reportMarkdown && format !== 'json') {
+        await refreshAntigravityReport();
+      }
+      try {
+        const res = await window.aegis.saveReport({
+          reportMarkdown: state.reportMarkdown,
+          analysisData: buildCurrentAnalysisPayload(),
+          format,
+        });
+        if (res && res.success && res.filePath) {
+          setReportFeedback(`💾 Saved ${format === 'json' ? 'JSON analysis bundle' : 'Markdown report'} to: ${res.filePath}`);
+        } else if (res && !res.canceled && res.error) {
+          state.error = res.error;
+          render();
+        }
+      } catch (err) {
+        state.error = (err && err.message) || 'Failed to save report.';
+        render();
       }
     }
 
@@ -497,7 +639,11 @@
                 <div style="font-size:11px; font-weight:700; color:var(--accent-text); text-transform:uppercase;">
                   ✨ Executive Binary Triage & Architecture Summary
                 </div>
-                <div style="display:flex; gap:8px;">
+                <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                  <button class="btn btn-success" style="padding:4px 10px; font-size:11px;"
+                    onclick="state.activeTab='report'; copyFullReport();">
+                    🤖 Generate &amp; Copy Antigravity Report →
+                  </button>
                   <button class="btn btn-primary" style="padding:4px 10px; font-size:11px;"
                     onclick="const wm = state.functions.find(f=>f.name==='WinMain')||state.functions[0]; if(wm) state.selectedFunc=wm; state.activeTab='decompile'; render();">
                     Open WinMain in Decompiler →
@@ -806,6 +952,96 @@
             </p>
             <pre style="color:#67e8f9;">${escapeHtml(t.hexPreview)}</pre>
           `;
+        } else if (state.activeTab === 'report') {
+          const md = state.reportMarkdown || '';
+          const lineCount = md ? md.split(/\r?\n/).length : 0;
+          const charCount = md.length;
+          const estTokens = Math.round(charCount / 4);
+          const primaryPath = state.savedReportPath || state.reportPath || '(auto-saved on analysis)';
+          tabBody = `
+            <div class="card" style="border-color:var(--accent);">
+              <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap; margin-bottom:14px;">
+                <div>
+                  <div style="font-size:11px; font-weight:700; color:var(--accent-text); text-transform:uppercase; margin-bottom:4px;">
+                    🤖 Antigravity Full Reverse-Engineering Report Generator
+                  </div>
+                  <div style="font-size:13px; color:var(--text-secondary);">
+                    Complete self-contained Markdown &amp; JSON intelligence dossier ready to paste or reference directly in <strong>Antigravity</strong>.
+                  </div>
+                </div>
+                <label style="display:flex; align-items:center; gap:8px; font-size:12px; color:var(--text-primary); cursor:pointer; background:var(--bg-tertiary); padding:6px 11px; border-radius:7px; border:1px solid var(--border-strong);">
+                  <input type="checkbox" ${state.includeAllDecompiled ? 'checked' : ''} onchange="toggleExhaustiveReport(this.checked)" />
+                  <span>Exhaustive Mode (All ${state.functions.length} functions &amp; full API table)</span>
+                </label>
+              </div>
+
+              <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px;">
+                <button class="btn btn-primary" onclick="copyFullReport()">
+                  📋 Copy Full Report for Antigravity
+                </button>
+                <button class="btn btn-success" onclick="copyAntigravityPrompt()">
+                  ⚡ Copy Antigravity File Prompt
+                </button>
+                <button class="btn" onclick="saveReportFile('md')">
+                  💾 Save Report (.md)
+                </button>
+                <button class="btn" onclick="saveReportFile('json')">
+                  📦 Save JSON Bundle (.json)
+                </button>
+                <button class="btn" onclick="refreshAntigravityReport()" ${state.generatingReport ? 'disabled' : ''}>
+                  🔄 ${state.generatingReport ? 'Regenerating...' : 'Regenerate'}
+                </button>
+              </div>
+
+              ${state.reportFeedback ? `
+                <div style="background:rgba(34,197,94,0.14); border:1px solid rgba(34,197,94,0.35); border-radius:8px; padding:10px 14px; margin-bottom:14px; font-size:12.5px; color:var(--success); font-weight:600;">
+                  ${escapeHtml(state.reportFeedback)}
+                </div>
+              ` : ''}
+
+              <div style="background:var(--bg-tertiary); border:1px solid var(--border); border-radius:8px; padding:12px 14px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:10px;">
+                  <div style="font-size:12px; color:var(--text-secondary);">
+                    <strong>Auto-Saved Bridge File:</strong>
+                    <code style="color:var(--accent-text); margin-left:6px; user-select:all;">${escapeHtml(primaryPath)}</code>
+                    ${state.reportPath && state.savedReportPath ? `<div style="font-size:11px; color:var(--text-muted); margin-top:3px;">Latest alias: <code>${escapeHtml(state.reportPath)}</code></div>` : ''}
+                  </div>
+                  <button class="btn" style="padding:4px 10px; font-size:11px;" onclick="copyReportFilePath()">
+                    📄 Copy File Path
+                  </button>
+                </div>
+
+                <div class="grid" style="grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:10px; padding-top:10px; border-top:1px solid var(--border);">
+                  <div>
+                    <div style="font-size:10.5px; color:var(--text-muted);">Report Lines</div>
+                    <div style="font-size:14px; font-weight:700;">${lineCount.toLocaleString()}</div>
+                  </div>
+                  <div>
+                    <div style="font-size:10.5px; color:var(--text-muted);">Characters</div>
+                    <div style="font-size:14px; font-weight:700;">${charCount.toLocaleString()}</div>
+                  </div>
+                  <div>
+                    <div style="font-size:10.5px; color:var(--text-muted);">Est. AI Tokens</div>
+                    <div style="font-size:14px; font-weight:700; color:var(--accent-text);">~${estTokens.toLocaleString()}</div>
+                  </div>
+                  <div>
+                    <div style="font-size:10.5px; color:var(--text-muted);">Decoded Functions</div>
+                    <div style="font-size:14px; font-weight:700;">${state.functions.length.toLocaleString()}</div>
+                  </div>
+                  <div>
+                    <div style="font-size:10.5px; color:var(--text-muted);">Imported APIs</div>
+                    <div style="font-size:14px; font-weight:700;">${state.imports.length.toLocaleString()}</div>
+                  </div>
+                  <div>
+                    <div style="font-size:10.5px; color:var(--text-muted);">Extracted Clues</div>
+                    <div style="font-size:14px; font-weight:700;">${state.strings.length.toLocaleString()}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <pre style="max-height:calc(100vh - 380px); white-space:pre-wrap; word-break:break-word;">${escapeHtml(md || 'Click Regenerate to build the full Antigravity report...')}</pre>
+          `;
         }
 
         mainHtml = `
@@ -870,6 +1106,7 @@
                   ['strings', `🔍 5. Strings (${state.strings.length})`],
                   ['sections', `📦 6. PE Sections (${(t.sectionDetails && t.sectionDetails.length) || 0})`],
                   ['hex', '🔢 7. Raw Hex'],
+                  ['report', '🤖 8. Antigravity Report'],
                 ].map(([id, label]) => `
                   <button class="tab ${state.activeTab === id ? 'active' : ''}"
                     onclick="state.activeTab='${id}'; render();">${label}</button>
@@ -980,6 +1217,7 @@
           </div>
           <div class="no-drag" style="display:flex; gap:8px;">
             ${t ? `<button class="btn" onclick="state.target=null; render();">← Home</button>` : ''}
+            ${t ? `<button class="btn btn-success" onclick="state.activeTab='report'; if(!state.reportMarkdown) refreshAntigravityReport(); render();">🤖 Feed to Antigravity (Report)</button>` : ''}
             <button class="btn" onclick="toggleTheme()" title="Switch between Dark and Light theme">
               ${state.theme === 'dark' ? '☀️ Light Mode' : '🌙 Dark Mode'}
             </button>
