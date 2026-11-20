@@ -253,12 +253,57 @@ export default function App() {
     if (ghToken) {
       localStorage.setItem('aegis_gh_token', ghToken);
     }
-    if (window.aegis?.checkForUpdates) {
-      const res = await window.aegis.checkForUpdates(ghToken || undefined);
-      if (!res.success) {
-        setUpdateState('error');
-        setErrorMessage(res.error || 'Failed to query GitHub repository releases');
+    try {
+      if (window.aegis?.checkForUpdates) {
+        const res = await window.aegis.checkForUpdates(ghToken || undefined);
+        if (window.aegis.hasConfiguredToken) {
+          setHasConfiguredToken(Boolean(await window.aegis.hasConfiguredToken()));
+        }
+        if (res.success) {
+          if (res.status === 'available') {
+            setUpdateState('available');
+            setUpdateInfo(res.updateInfo);
+          } else if (res.status === 'not-available') {
+            setUpdateState('not-available');
+            setUpdateInfo(res.updateInfo || null);
+          }
+        } else {
+          setUpdateState('error');
+          setErrorMessage(res.error || 'Failed to query GitHub repository releases');
+        }
+      } else {
+        setUpdateState('not-available');
       }
+    } catch (err: any) {
+      setUpdateState('error');
+      setErrorMessage(err?.message || 'Failed to query GitHub repository releases');
+    }
+  };
+
+  const downloadUpdate = async () => {
+    setUpdateState('downloading');
+    setDownloadProgress(0);
+    setErrorMessage('');
+    try {
+      if (window.aegis?.downloadUpdate) {
+        const res = await window.aegis.downloadUpdate();
+        if (res.success) {
+          setUpdateState('downloaded');
+          setDownloadProgress(100);
+        } else {
+          setUpdateState('error');
+          setErrorMessage(res.error || 'Failed to download and apply update');
+        }
+      }
+    } catch (err: any) {
+      setUpdateState('error');
+      setErrorMessage(err?.message || 'Failed to download and apply update');
+    }
+  };
+
+  const installUpdate = () => {
+    if (window.aegis?.installUpdate) {
+      window.aegis.installUpdate();
     }
   };
 
@@ -1609,7 +1654,7 @@ export default function App() {
               boxShadow: '0 20px 40px rgba(0,0,0,0.5)',
             }}
           >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
               <h3
                 style={{
                   fontSize: '16px',
@@ -1622,7 +1667,7 @@ export default function App() {
                 }}
               >
                 <RefreshCw style={{ width: '16px', height: '16px', color: colors.accentText }} />
-                Check for Updates
+                Built-in Patch Updater
               </h3>
               <button
                 onClick={() => setShowUpdateModal(false)}
@@ -1630,6 +1675,10 @@ export default function App() {
               >
                 <X style={{ width: '18px', height: '18px' }} />
               </button>
+            </div>
+            <div style={{ fontSize: '12px', color: colors.textMuted, marginBottom: '14px' }}>
+              Installed: <strong style={{ color: colors.textPrimary }}>v{appVersion}</strong> &bull; Repo:{' '}
+              <code>iammrwrath/AegisRE</code>
             </div>
 
             {hasConfiguredToken ? (
@@ -1649,7 +1698,7 @@ export default function App() {
               >
                 <CheckCircle2 style={{ width: '16px', height: '16px', flexShrink: 0 }} />
                 <span>
-                  GitHub PAT loaded from <code>%APPDATA%\AegisRE\config.json</code>
+                  GitHub Update Token loaded from <code>%APPDATA%\AegisRE\config.json</code>
                 </span>
               </div>
             ) : (
@@ -1691,7 +1740,46 @@ export default function App() {
               </div>
             )}
 
-            {updateState === 'not-available' && (
+            {updateState === 'checking' && (
+              <div
+                style={{
+                  backgroundColor: colors.accentSoft,
+                  border: `1px solid ${colors.accentText}`,
+                  borderRadius: '8px',
+                  padding: '12px',
+                  marginBottom: '16px',
+                  fontSize: '12px',
+                  color: colors.accentText,
+                }}
+              >
+                Checking <code>iammrwrath/AegisRE</code> on GitHub for new releases and patches...
+              </div>
+            )}
+
+            {updateState === 'available' && (
+              <div
+                style={{
+                  backgroundColor: colors.accentSoft,
+                  border: `1px solid ${colors.accentText}`,
+                  borderRadius: '8px',
+                  padding: '12px',
+                  marginBottom: '16px',
+                  fontSize: '12px',
+                  color: colors.textPrimary,
+                }}
+              >
+                <div style={{ fontWeight: 700, color: colors.accent, marginBottom: '4px' }}>
+                  New Update Available: v{updateInfo?.version || appVersion}
+                </div>
+                <div style={{ color: colors.textSecondary }}>
+                  Current: v{appVersion}
+                  {updateInfo?.name ? ` • ${updateInfo.name}` : ''}
+                  {updateInfo?.releaseDate ? ` (${new Date(updateInfo.releaseDate).toLocaleDateString()})` : ''}
+                </div>
+              </div>
+            )}
+
+            {updateState === 'downloading' && (
               <div
                 style={{
                   backgroundColor: colors.bgTertiary,
@@ -1700,7 +1788,58 @@ export default function App() {
                   padding: '12px',
                   marginBottom: '16px',
                   fontSize: '12px',
-                  color: colors.textMuted,
+                  color: colors.textSecondary,
+                }}
+              >
+                <div style={{ marginBottom: '8px' }}>Downloading &amp; applying patch... {downloadProgress}%</div>
+                <div
+                  style={{
+                    width: '100%',
+                    height: '8px',
+                    backgroundColor: colors.bgPrimary,
+                    borderRadius: '999px',
+                    overflow: 'hidden',
+                    border: `1px solid ${colors.border}`,
+                  }}
+                >
+                  <div
+                    style={{
+                      width: `${Math.min(100, Math.max(0, downloadProgress))}%`,
+                      height: '100%',
+                      backgroundColor: colors.accentBg,
+                      transition: 'width 0.2s ease',
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {updateState === 'downloaded' && (
+              <div
+                style={{
+                  backgroundColor: 'rgba(34, 197, 94, 0.12)',
+                  border: '1px solid rgba(34, 197, 94, 0.3)',
+                  borderRadius: '8px',
+                  padding: '12px',
+                  marginBottom: '16px',
+                  fontSize: '12px',
+                  color: colors.success,
+                }}
+              >
+                Update to v{updateInfo?.version || appVersion} applied! Restart to load the new version.
+              </div>
+            )}
+
+            {updateState === 'not-available' && (
+              <div
+                style={{
+                  backgroundColor: 'rgba(34, 197, 94, 0.1)',
+                  border: '1px solid rgba(34, 197, 94, 0.28)',
+                  borderRadius: '8px',
+                  padding: '12px',
+                  marginBottom: '16px',
+                  fontSize: '12px',
+                  color: colors.success,
                 }}
               >
                 You are running the latest version of AegisRE Studio (v{appVersion}).
@@ -1742,26 +1881,68 @@ export default function App() {
               >
                 Close
               </button>
-              <button
-                onClick={checkForUpdates}
-                disabled={updateState === 'checking'}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  padding: '7px 14px',
-                  borderRadius: '6px',
-                  fontSize: '12px',
-                  backgroundColor: colors.accentBg,
-                  border: 'none',
-                  color: '#ffffff',
-                  cursor: updateState === 'checking' ? 'not-allowed' : 'pointer',
-                  fontWeight: 600,
-                }}
-              >
-                <RefreshCw style={{ width: '13px', height: '13px' }} />
-                Check Now
-              </button>
+              {updateState === 'available' ? (
+                <button
+                  onClick={downloadUpdate}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    padding: '7px 14px',
+                    borderRadius: '6px',
+                    fontSize: '12px',
+                    backgroundColor: colors.accentBg,
+                    border: 'none',
+                    color: '#ffffff',
+                    cursor: 'pointer',
+                    fontWeight: 600,
+                  }}
+                >
+                  Download &amp; Apply Update
+                </button>
+              ) : updateState === 'downloaded' ? (
+                <button
+                  onClick={installUpdate}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    padding: '7px 14px',
+                    borderRadius: '6px',
+                    fontSize: '12px',
+                    backgroundColor: '#16a34a',
+                    border: 'none',
+                    color: '#ffffff',
+                    cursor: 'pointer',
+                    fontWeight: 600,
+                  }}
+                >
+                  Restart to Apply
+                </button>
+              ) : (
+                <button
+                  onClick={checkForUpdates}
+                  disabled={updateState === 'checking' || updateState === 'downloading'}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    padding: '7px 14px',
+                    borderRadius: '6px',
+                    fontSize: '12px',
+                    backgroundColor: colors.accentBg,
+                    border: 'none',
+                    color: '#ffffff',
+                    cursor:
+                      updateState === 'checking' || updateState === 'downloading' ? 'not-allowed' : 'pointer',
+                    opacity: updateState === 'checking' || updateState === 'downloading' ? 0.65 : 1,
+                    fontWeight: 600,
+                  }}
+                >
+                  <RefreshCw style={{ width: '13px', height: '13px' }} />
+                  {updateState === 'checking' ? 'Checking...' : 'Check Now'}
+                </button>
+              )}
             </div>
           </div>
         </div>

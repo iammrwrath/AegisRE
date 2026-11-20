@@ -1,7 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { autoUpdater } = require('electron-updater');
+const https = require('https');
 const {
   analyzeBinaryTarget,
   disassembleFunctionAtAddress,
@@ -10,9 +10,110 @@ const {
 
 let mainWindow = null;
 
-// Configure updater
-autoUpdater.autoDownload = false;
-autoUpdater.autoInstallOnAppQuit = true;
+const GITHUB_OWNER = 'iammrwrath';
+const GITHUB_REPO = 'AegisRE';
+let latestReleaseInfo = null;
+
+function readCurrentAppVersion() {
+  try {
+    const pkgPath = path.resolve(__dirname, '../package.json');
+    if (fs.existsSync(pkgPath)) {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+      if (pkg && typeof pkg.version === 'string' && pkg.version.trim()) {
+        return pkg.version.trim();
+      }
+    }
+  } catch (err) {
+    console.error('Error reading package.json version:', err);
+  }
+  return app.getVersion();
+}
+
+function compareVersions(a, b) {
+  const parse = (v) => {
+    const clean = String(v || '').trim().replace(/^v/i, '');
+    const [core, pre = ''] = clean.split('-', 2);
+    const parts = core.split('.').map((n) => {
+      const parsed = parseInt(n, 10);
+      return Number.isNaN(parsed) ? 0 : parsed;
+    });
+    return { parts, pre };
+  };
+  const va = parse(a);
+  const vb = parse(b);
+  const len = Math.max(va.parts.length, vb.parts.length, 3);
+  for (let i = 0; i < len; i++) {
+    const na = va.parts[i] || 0;
+    const nb = vb.parts[i] || 0;
+    if (na !== nb) return na > nb ? 1 : -1;
+  }
+  if (va.pre && !vb.pre) return -1;
+  if (!va.pre && vb.pre) return 1;
+  if (va.pre && vb.pre && va.pre !== vb.pre) return va.pre > vb.pre ? 1 : -1;
+  return 0;
+}
+
+function httpsGetBuffer(urlOrPath, token, acceptHeader, redirectsLeft = 5) {
+  return new Promise((resolve, reject) => {
+    const isAbsolute = /^https?:\/\//i.test(urlOrPath);
+    const targetUrl = isAbsolute ? new URL(urlOrPath) : new URL(`https://api.github.com${urlOrPath}`);
+    const headers = {
+      'User-Agent': 'AegisRE-Studio',
+      Accept: acceptHeader || 'application/vnd.github+json',
+    };
+    if (token && targetUrl.hostname === 'api.github.com') {
+      headers.Authorization = `Bearer ${token}`;
+    }
+
+    const req = https.get(targetUrl, { headers }, (res) => {
+      const statusCode = res.statusCode || 0;
+      if ([301, 302, 303, 307, 308].includes(statusCode) && res.headers.location) {
+        res.resume();
+        if (redirectsLeft <= 0) {
+          reject(new Error(`Too many redirects while fetching ${targetUrl.pathname}`));
+          return;
+        }
+        const nextUrl = new URL(res.headers.location, targetUrl).toString();
+        httpsGetBuffer(nextUrl, token, acceptHeader, redirectsLeft - 1).then(resolve, reject);
+        return;
+      }
+
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => {
+        const body = Buffer.concat(chunks);
+        if (statusCode >= 200 && statusCode < 300) {
+          resolve(body);
+          return;
+        }
+        let detail = `GitHub API returned HTTP ${statusCode}`;
+        try {
+          const parsed = JSON.parse(body.toString('utf8'));
+          if (parsed && parsed.message) {
+            detail = `${detail}: ${parsed.message}`;
+          }
+        } catch (_) {}
+        const err = new Error(detail);
+        err.statusCode = statusCode;
+        reject(err);
+      });
+    });
+
+    req.setTimeout(15000, () => {
+      req.destroy(new Error('Request to GitHub timed out'));
+    });
+    req.on('error', reject);
+  });
+}
+
+async function githubApiJson(apiPath, token) {
+  const buf = await httpsGetBuffer(apiPath, token, 'application/vnd.github+json');
+  return JSON.parse(buf.toString('utf8'));
+}
+
+async function githubDownloadFile(apiPath, token) {
+  return httpsGetBuffer(apiPath, token, 'application/vnd.github.raw+json');
+}
 
 function getAegisConfigDir() {
   return path.join(app.getPath('appData'), 'AegisRE');
@@ -128,27 +229,65 @@ function sendUpdateStatus(status, data) {
   }
 }
 
-autoUpdater.on('checking-for-update', () => sendUpdateStatus('checking', null));
-autoUpdater.on('update-available', (info) => sendUpdateStatus('available', info));
-autoUpdater.on('update-not-available', (info) => sendUpdateStatus('not-available', info));
-autoUpdater.on('error', (err) =>
-  sendUpdateStatus('error', err == null ? 'unknown' : (err.stack || err).toString())
-);
-autoUpdater.on('download-progress', (progressObj) => sendUpdateStatus('downloading', progressObj));
-autoUpdater.on('update-downloaded', (info) => sendUpdateStatus('downloaded', info));
-
 ipcMain.handle('updater:check', async (event, explicitToken) => {
   try {
-    const token = explicitToken || resolveGithubToken();
-    if (token) {
-      autoUpdater.requestHeaders = {
-        Authorization: `token ${token}`,
-      };
+    const trimmedExplicit = typeof explicitToken === 'string' ? explicitToken.trim() : '';
+    if (trimmedExplicit) {
+      writeAegisConfig({ githubToken: trimmedExplicit });
     }
-    const result = await autoUpdater.checkForUpdates();
-    return { success: true, updateInfo: result?.updateInfo };
+    const token = trimmedExplicit || resolveGithubToken();
+    sendUpdateStatus('checking', null);
+
+    let release = null;
+    try {
+      release = await githubApiJson(`/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`, token);
+    } catch (err) {
+      if (err && err.statusCode === 404) {
+        const list = await githubApiJson(`/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases?per_page=5`, token);
+        if (Array.isArray(list) && list.length > 0) {
+          release = list.find((r) => r && !r.draft) || list[0];
+        }
+      } else {
+        throw err;
+      }
+    }
+
+    const currentVersion = readCurrentAppVersion();
+    if (!release || !release.tag_name) {
+      latestReleaseInfo = null;
+      const info = { version: currentVersion, latestVersion: currentVersion };
+      sendUpdateStatus('not-available', info);
+      return { success: true, status: 'not-available', updateInfo: info };
+    }
+
+    const latestVersion = String(release.tag_name || '').replace(/^v/i, '');
+    const updateInfo = {
+      version: latestVersion,
+      currentVersion,
+      tagName: release.tag_name,
+      name: release.name || release.tag_name,
+      releaseDate: release.published_at || release.created_at || null,
+      releaseNotes: release.body || '',
+      htmlUrl: release.html_url || '',
+    };
+    latestReleaseInfo = updateInfo;
+
+    if (latestVersion && compareVersions(latestVersion, currentVersion) > 0) {
+      sendUpdateStatus('available', updateInfo);
+      return { success: true, status: 'available', updateInfo };
+    }
+
+    const notAvailableInfo = {
+      ...updateInfo,
+      version: currentVersion,
+      latestVersion: latestVersion || currentVersion,
+    };
+    sendUpdateStatus('not-available', notAvailableInfo);
+    return { success: true, status: 'not-available', updateInfo: notAvailableInfo };
   } catch (err) {
-    return { success: false, error: err.message };
+    const msg = (err && err.message) || 'Failed to check GitHub releases';
+    sendUpdateStatus('error', msg);
+    return { success: false, error: msg };
   }
 });
 
@@ -156,18 +295,65 @@ ipcMain.handle('updater:hasToken', () => Boolean(resolveGithubToken()));
 
 ipcMain.handle('updater:download', async () => {
   try {
-    await autoUpdater.downloadUpdate();
-    return { success: true };
+    const token = resolveGithubToken();
+    const targetVersion = (latestReleaseInfo && latestReleaseInfo.version) || readCurrentAppVersion();
+    sendUpdateStatus('downloading', { percent: 10 });
+
+    const appRoot = path.resolve(__dirname, '..');
+    const refQuery =
+      latestReleaseInfo && latestReleaseInfo.tagName
+        ? `?ref=${encodeURIComponent(latestReleaseInfo.tagName)}`
+        : '';
+
+    const filesToSync = [
+      { repoPath: 'packages/desktop/electron/ui.html', localRel: 'dist/index.html', percent: 30 },
+      { repoPath: 'packages/desktop/electron/main.cjs', localRel: 'dist-electron/main.cjs', percent: 55 },
+      { repoPath: 'packages/desktop/electron/preload.cjs', localRel: 'dist-electron/preload.cjs', percent: 80 },
+      { repoPath: 'packages/desktop/electron/disassembler.cjs', localRel: 'dist-electron/disassembler.cjs', percent: 95 },
+    ];
+
+    for (const file of filesToSync) {
+      try {
+        const buf = await githubDownloadFile(
+          `/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/${file.repoPath}${refQuery}`,
+          token
+        );
+        const destPath = path.join(appRoot, file.localRel);
+        fs.mkdirSync(path.dirname(destPath), { recursive: true });
+        fs.writeFileSync(destPath, buf);
+      } catch (fileErr) {
+        if (!fileErr || fileErr.statusCode !== 404) {
+          throw fileErr;
+        }
+      }
+      sendUpdateStatus('downloading', { percent: file.percent });
+    }
+
+    const pkgPath = path.join(appRoot, 'package.json');
+    if (fs.existsSync(pkgPath)) {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+      pkg.version = targetVersion;
+      fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n', 'utf8');
+    }
+
+    sendUpdateStatus('downloaded', { version: targetVersion });
+    return { success: true, version: targetVersion };
   } catch (err) {
-    return { success: false, error: err.message };
+    const msg = (err && err.message) || 'Failed to download update';
+    sendUpdateStatus('error', msg);
+    return { success: false, error: msg };
   }
 });
 
 ipcMain.handle('updater:install', () => {
-  autoUpdater.quitAndInstall();
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.reloadIgnoringCache();
+  }
+  app.relaunch();
+  app.exit(0);
 });
 
-ipcMain.handle('app:version', () => app.getVersion());
+ipcMain.handle('app:version', () => readCurrentAppVersion());
 
 ipcMain.handle('dialog:openFile', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {

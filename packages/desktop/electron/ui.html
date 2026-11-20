@@ -1,0 +1,1001 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AegisRE Studio — Ghidra Decompiler & Binary Inspector</title>
+  <style>
+    :root {
+      --bg-primary: #020617;
+      --bg-secondary: #0f172a;
+      --bg-tertiary: rgba(15, 23, 42, 0.72);
+      --bg-code: #070b14;
+      --bg-hover: rgba(30, 41, 59, 0.55);
+      --bg-selected: rgba(8, 145, 178, 0.2);
+      --border: #1e293b;
+      --border-strong: #334155;
+      --text-primary: #f8fafc;
+      --text-secondary: #cbd5e1;
+      --text-muted: #94a3b8;
+      --text-dim: #64748b;
+      --accent: #22d3ee;
+      --accent-text: #38bdf8;
+      --accent-bg: #0891b2;
+      --accent-soft: rgba(6, 182, 212, 0.15);
+      --success: #4ade80;
+      --warning: #fbbf24;
+      --danger: #f87171;
+      --welcome-grad: radial-gradient(circle at center, #0f172a 0%, #020617 100%);
+      --card-shadow: 0 20px 50px rgba(0,0,0,0.45);
+    }
+
+    body.light-theme {
+      --bg-primary: #f8fafc;
+      --bg-secondary: #ffffff;
+      --bg-tertiary: #f1f5f9;
+      --bg-code: #0f172a;
+      --bg-hover: #e2e8f0;
+      --bg-selected: rgba(8, 145, 178, 0.14);
+      --border: #e2e8f0;
+      --border-strong: #cbd5e1;
+      --text-primary: #0f172a;
+      --text-secondary: #334155;
+      --text-muted: #475569;
+      --text-dim: #64748b;
+      --accent: #0891b2;
+      --accent-text: #0284c7;
+      --accent-bg: #0891b2;
+      --accent-soft: rgba(8, 145, 178, 0.12);
+      --success: #16a34a;
+      --warning: #d97706;
+      --danger: #dc2626;
+      --welcome-grad: radial-gradient(circle at center, #ffffff 0%, #e2e8f0 100%);
+      --card-shadow: 0 16px 40px rgba(15, 23, 42, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+    body, html {
+      margin: 0; padding: 0; height: 100vh; width: 100vw;
+      background: var(--bg-primary); color: var(--text-primary);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      overflow: hidden; user-select: none;
+      transition: background-color 0.15s ease, color 0.15s ease;
+    }
+    .app { display: flex; flex-direction: column; height: 100vh; width: 100vw; }
+    header {
+      height: 46px; background: var(--bg-secondary); border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 145px 0 16px; z-index: 10; -webkit-app-region: drag;
+    }
+    .no-drag { -webkit-app-region: no-drag; }
+    .brand { display: flex; align-items: center; gap: 10px; }
+    .logo {
+      width: 28px; height: 28px; border-radius: 6px;
+      background: var(--accent-soft); border: 1px solid var(--accent);
+      display: flex; align-items: center; justify-content: center; color: var(--accent); font-weight: 800;
+    }
+    .badge {
+      font-size: 11px; background: var(--bg-tertiary); color: var(--accent-text);
+      border: 1px solid var(--border);
+      padding: 2px 9px; border-radius: 999px; font-weight: 600;
+    }
+    .btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 6px 12px; border-radius: 7px; font-size: 12px; font-weight: 600;
+      cursor: pointer; border: 1px solid var(--border-strong); background: var(--bg-tertiary); color: var(--text-secondary);
+      transition: all 0.15s; -webkit-app-region: no-drag;
+    }
+    .btn:hover { border-color: var(--accent-text); color: var(--text-primary); }
+    .btn-primary {
+      background: var(--accent-bg); border-color: var(--accent); color: #ffffff !important;
+      box-shadow: 0 3px 10px rgba(8, 145, 178, 0.3);
+    }
+    .btn-primary:hover { filter: brightness(1.08); }
+    .btn-success {
+      background: #16a34a; border-color: #22c55e; color: #ffffff !important;
+    }
+    .welcome {
+      flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+      padding: 32px; text-align: center;
+      background: var(--welcome-grad);
+    }
+    .drop-card {
+      max-width: 720px; width: 100%; border: 2px dashed var(--accent-text);
+      background: var(--bg-secondary); border-radius: 18px;
+      padding: 42px 36px; box-shadow: var(--card-shadow);
+    }
+    .workspace { flex: 1; display: flex; overflow: hidden; }
+    .sidebar {
+      width: 330px; border-right: 1px solid var(--border); background: var(--bg-secondary);
+      display: flex; flex-direction: column;
+    }
+    .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: var(--bg-primary); }
+    .tabs {
+      min-height: 48px; border-bottom: 1px solid var(--border); background: var(--bg-secondary);
+      display: flex; align-items: center; gap: 6px; padding: 6px 16px; flex-wrap: wrap;
+    }
+    .tab {
+      padding: 6px 12px; border-radius: 7px; font-size: 12px; font-weight: 600;
+      cursor: pointer; border: 1px solid var(--border-strong); background: var(--bg-tertiary); color: var(--text-secondary);
+    }
+    .tab.active { background: var(--accent-bg); border-color: var(--accent); color: #ffffff; }
+    .content { flex: 1; overflow: auto; padding: 20px; user-select: text; }
+    .card {
+      background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; padding: 18px; margin-bottom: 16px;
+    }
+    .grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px;
+    }
+    .fn-item {
+      padding: 9px 12px; cursor: pointer; border-bottom: 1px solid var(--border);
+      border-left: 3px solid transparent;
+    }
+    .fn-item:hover { background: var(--bg-hover); }
+    .fn-item.active { background: var(--bg-selected); border-left-color: var(--accent); }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; text-align: left; }
+    th {
+      background: var(--bg-tertiary); position: sticky; top: 0; padding: 9px 12px;
+      border-bottom: 1px solid var(--border); color: var(--text-muted); z-index: 2;
+    }
+    td { padding: 7px 12px; border-bottom: 1px solid var(--border); }
+    pre {
+      margin: 0; padding: 16px; background: var(--bg-code); border: 1px solid var(--border-strong);
+      border-radius: 8px; color: #f1f5f9; font-family: Consolas, "JetBrains Mono", monospace;
+      font-size: 12.5px; line-height: 1.65; overflow: auto;
+    }
+    input[type="text"], input[type="password"] {
+      background: var(--bg-primary); border: 1px solid var(--border-strong); border-radius: 6px;
+      padding: 7px 11px; font-size: 12px; color: var(--text-primary); outline: none;
+    }
+    input[type="text"]:focus, input[type="password"]:focus { border-color: var(--accent-text); }
+    footer {
+      height: 34px; border-top: 1px solid var(--border); background: var(--bg-secondary);
+      padding: 0 16px; display: flex; align-items: center; justify-content: space-between;
+      font-size: 11px; color: var(--text-muted);
+    }
+    .modal-backdrop {
+      position: fixed; inset: 0; background: rgba(0, 0, 0, 0.72);
+      backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; z-index: 100;
+    }
+    .modal {
+      width: 480px; background: var(--bg-secondary); border: 1px solid var(--border-strong);
+      border-radius: 12px; padding: 24px; box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+    }
+    .call-link {
+      color: var(--warning); text-decoration: underline; cursor: pointer; font-weight: 700;
+    }
+    .call-link:hover { color: var(--accent); }
+  </style>
+</head>
+<body ondragover="event.preventDefault()" ondrop="handleDrop(event)">
+  <div class="app" id="app"></div>
+
+  <script>
+    const state = {
+      appVersion: '1.1.2',
+      theme: localStorage.getItem('aegis_theme') || 'dark',
+      target: null,
+      functions: [],
+      strings: [],
+      imports: [],
+      selectedFunc: null,
+      activeTab: 'overview', // overview | decompile | disassembly | imports | strings | sections | hex
+      funcFilter: '',
+      customAddress: '',
+      stringCategory: 'ALL',
+      stringSearch: '',
+      importCategory: 'ALL',
+      importSearch: '',
+      customPath: '',
+      error: '',
+      loading: false,
+      showUpdateModal: false,
+      hasConfiguredToken: false,
+      ghToken: localStorage.getItem('aegis_gh_token') || '',
+      updateState: 'idle',
+      updateInfo: null,
+      downloadProgress: 0,
+      updateError: '',
+    };
+
+    function applyThemeClass() {
+      if (state.theme === 'light') {
+        document.body.classList.add('light-theme');
+      } else {
+        document.body.classList.remove('light-theme');
+      }
+    }
+    applyThemeClass();
+
+    function toggleTheme() {
+      state.theme = state.theme === 'dark' ? 'light' : 'dark';
+      localStorage.setItem('aegis_theme', state.theme);
+      applyThemeClass();
+      if (window.aegis && window.aegis.setTheme) {
+        window.aegis.setTheme(state.theme);
+      }
+      render();
+    }
+
+    if (window.aegis) {
+      if (window.aegis.getVersion) {
+        window.aegis.getVersion().then(v => { state.appVersion = v || '1.1.2'; render(); });
+      }
+      if (window.aegis.getLatestTarget) {
+        window.aegis.getLatestTarget().then(data => {
+          if (data && data.success && data.target && !state.target) {
+            state.target = data.target;
+            state.functions = data.functions || [];
+            state.strings = data.strings || [];
+            state.imports = data.imports || [];
+            const wm = state.functions.find(f => f.name === 'WinMain');
+            state.selectedFunc = wm || state.functions[0] || null;
+            render();
+          }
+        });
+      }
+      if (window.aegis.getTheme) {
+        window.aegis.getTheme().then(t => {
+          if (t === 'light' || t === 'dark') {
+            state.theme = t;
+            localStorage.setItem('aegis_theme', t);
+            applyThemeClass();
+            render();
+          }
+        });
+      }
+      if (window.aegis.hasConfiguredToken) {
+        window.aegis.hasConfiguredToken().then(has => { state.hasConfiguredToken = Boolean(has); render(); });
+      }
+      if (window.aegis.onUpdaterStatus) {
+        window.aegis.onUpdaterStatus(({ status, data }) => {
+          if (status === 'checking') state.updateState = 'checking';
+          else if (status === 'available') { state.updateState = 'available'; state.updateInfo = data; }
+          else if (status === 'not-available') { state.updateState = 'not-available'; }
+          else if (status === 'downloading') { state.updateState = 'downloading'; state.downloadProgress = Math.round((data && data.percent) || 0); }
+          else if (status === 'downloaded') { state.updateState = 'downloaded'; }
+          else if (status === 'error') { state.updateState = 'error'; state.updateError = typeof data === 'string' ? data : JSON.stringify(data); }
+          render();
+        });
+      }
+    }
+
+    function handleDrop(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      const files = e.dataTransfer && e.dataTransfer.files;
+      if (files && files.length > 0 && files[0].path) {
+        analyzePath(files[0].path);
+      }
+    }
+
+    async function checkForUpdates() {
+      state.updateState = 'checking';
+      state.updateError = '';
+      if (state.ghToken) {
+        localStorage.setItem('aegis_gh_token', state.ghToken);
+      }
+      render();
+      try {
+        if (window.aegis && window.aegis.checkForUpdates) {
+          const res = await window.aegis.checkForUpdates(state.ghToken || undefined);
+          if (window.aegis.hasConfiguredToken) {
+            state.hasConfiguredToken = Boolean(await window.aegis.hasConfiguredToken());
+          }
+          if (res && res.success) {
+            if (res.status === 'available') {
+              state.updateState = 'available';
+              state.updateInfo = res.updateInfo;
+            } else if (res.status === 'not-available') {
+              state.updateState = 'not-available';
+              state.updateInfo = res.updateInfo || null;
+            }
+          } else {
+            state.updateState = 'error';
+            state.updateError = (res && res.error) || 'Failed to check GitHub releases.';
+          }
+        } else {
+          state.updateState = 'not-available';
+        }
+      } catch (err) {
+        state.updateState = 'error';
+        state.updateError = (err && err.message) || 'Failed to check GitHub releases.';
+      }
+      render();
+    }
+
+    async function downloadUpdate() {
+      state.updateState = 'downloading';
+      state.downloadProgress = 0;
+      state.updateError = '';
+      render();
+      try {
+        if (window.aegis && window.aegis.downloadUpdate) {
+          const res = await window.aegis.downloadUpdate();
+          if (res && res.success) {
+            state.updateState = 'downloaded';
+            state.downloadProgress = 100;
+          } else {
+            state.updateState = 'error';
+            state.updateError = (res && res.error) || 'Failed to download and apply update.';
+          }
+        }
+      } catch (err) {
+        state.updateState = 'error';
+        state.updateError = (err && err.message) || 'Failed to download and apply update.';
+      }
+      render();
+    }
+
+    function installUpdate() {
+      if (window.aegis && window.aegis.installUpdate) {
+        window.aegis.installUpdate();
+      }
+    }
+
+    async function pickFile() {
+      state.error = '';
+      render();
+      try {
+        if (window.aegis && window.aegis.openFile) {
+          const file = await window.aegis.openFile();
+          if (file && file.path) await analyzePath(file.path);
+          return;
+        }
+      } catch (err) {
+        state.error = err.message || 'Could not open file picker.';
+        render();
+      }
+    }
+
+    async function analyzePath(filePath) {
+      if (!filePath) return;
+      state.loading = true;
+      state.error = '';
+      render();
+      try {
+        let data;
+        if (window.aegis && window.aegis.analyzeTarget) {
+          data = await window.aegis.analyzeTarget(filePath);
+        }
+        if (data && data.success && data.target) {
+          state.target = data.target;
+          state.functions = data.functions || [];
+          state.strings = data.strings || [];
+          state.imports = data.imports || [];
+          const wm = state.functions.find(f => f.name === 'WinMain');
+          state.selectedFunc = wm || state.functions[0] || null;
+          state.activeTab = 'overview';
+        } else {
+          state.error = (data && data.error) || 'Failed to inspect file.';
+        }
+      } catch (err) {
+        state.error = err.message || 'Error analyzing file.';
+      } finally {
+        state.loading = false;
+        render();
+      }
+    }
+
+    async function jumpToAddress(addrStr) {
+      const addr = (addrStr || state.customAddress || '').trim();
+      if (!addr || !state.target) return;
+      const norm = addr.toLowerCase().replace(/^0x/, '');
+      const existing = state.functions.find(
+        f => f.address.toLowerCase().replace(/^0x/, '') === norm || f.name.toLowerCase() === addr.toLowerCase()
+      );
+      if (existing) {
+        state.selectedFunc = existing;
+        if (state.activeTab !== 'disassembly' && state.activeTab !== 'decompile') {
+          state.activeTab = 'decompile';
+        }
+        render();
+        return;
+      }
+
+      if (window.aegis && window.aegis.disassembleAt) {
+        const res = await window.aegis.disassembleAt(state.target.path, addr, 512);
+        if (res && res.success && res.function) {
+          state.functions.unshift(res.function);
+          state.selectedFunc = res.function;
+          if (state.activeTab !== 'disassembly' && state.activeTab !== 'decompile') {
+            state.activeTab = 'decompile';
+          }
+          state.customAddress = '';
+          render();
+        } else {
+          state.error = (res && res.error) || `Could not decode address ${addr}`;
+          render();
+        }
+      }
+    }
+
+    function escapeHtml(str) {
+      return String(str || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function render() {
+      const root = document.getElementById('app');
+      const t = state.target;
+      const urlCount = state.strings.filter(s => s.section === 'Web Link / URL').length;
+      const pathCount = state.strings.filter(s => s.section === 'File Path / System Setting').length;
+      const keywordCount = state.strings.filter(s => s.section === 'Notable Keyword / Command').length;
+      const engineCount = state.strings.filter(s => s.section === 'Audio, GPU & Engine Clues').length;
+
+      let mainHtml = '';
+      if (!t) {
+        mainHtml = `
+          <div class="welcome">
+            <div class="drop-card">
+              <div style="font-size:42px; margin-bottom:12px;">🛡️</div>
+              <h2 style="margin:0 0 10px 0; font-size:24px; color:var(--text-primary);">
+                Ghidra-Powered Decompiler & Plain-English Binary Inspector
+              </h2>
+              <p style="font-size:14px; color:var(--text-muted); max-width:560px; margin:0 auto 24px auto; line-height:1.6;">
+                Drop or open any <code>.exe</code>, <code>.dll</code>, <code>.sys</code>, or package file.
+                AegisRE Studio automatically parses the full <strong>PE Import Table</strong>, discovers <strong>WinMain & .pdata subroutines</strong>,
+                disassembles <strong>x86_64 machine instructions</strong>, lifts them into <strong>Ghidra-style C code</strong>, and explains capabilities in plain English.
+              </p>
+              <div style="display:flex; gap:12px; justify-content:center; flex-wrap:wrap; margin-bottom:20px;">
+                <button class="btn btn-primary" onclick="pickFile()" style="font-size:14px; padding:12px 22px;">
+                  📂 ${state.loading ? 'Decompiling Binary...' : 'Choose an App or Binary (.exe, .dll)'}
+                </button>
+                <button class="btn" onclick="analyzePath('C:\\\\Program Files\\\\VirtualDJ\\\\virtualdj.exe')">
+                  🎧 Inspect VirtualDJ.exe
+                </button>
+                <button class="btn" onclick="analyzePath('C:\\\\Windows\\\\System32\\\\notepad.exe')">
+                  ✨ Inspect Windows Notepad
+                </button>
+              </div>
+              <div style="display:flex; gap:8px; justify-content:center; max-width:520px; margin:0 auto;">
+                <input type="text" id="customPathInput" placeholder="Or paste any file path here (e.g. C:\\Program Files\\VirtualDJ\\virtualdj.exe)"
+                  style="flex:1;" value="${escapeHtml(state.customPath)}"
+                  oninput="state.customPath = this.value"
+                  onkeydown="if(event.key==='Enter') analyzePath(this.value)" />
+                <button class="btn" onclick="analyzePath(document.getElementById('customPathInput').value)">
+                  Analyze Path
+                </button>
+              </div>
+            </div>
+          </div>
+        `;
+      } else {
+        const filteredFns = state.functions.filter(fn => {
+          const q = state.funcFilter.toLowerCase();
+          if (!q) return true;
+          return (
+            fn.name.toLowerCase().includes(q) ||
+            fn.address.toLowerCase().includes(q) ||
+            (fn.plainTitle && fn.plainTitle.toLowerCase().includes(q)) ||
+            (fn.category && fn.category.toLowerCase().includes(q))
+          );
+        });
+
+        let tabBody = '';
+        if (state.activeTab === 'overview') {
+          const capCards = (t.capabilities && t.capabilities.length > 0)
+            ? t.capabilities.map(c => `
+                <div class="card" style="margin-bottom:0;">
+                  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                    <strong style="color:var(--accent-text); font-size:13.5px;">${escapeHtml(c.title)}</strong>
+                    <span class="badge">${c.count} API(s)</span>
+                  </div>
+                  <ul style="margin:0; padding-left:18px; font-size:12px; color:var(--text-secondary); line-height:1.55;">
+                    ${c.examples.map(ex => `<li>${escapeHtml(ex)}</li>`).join('')}
+                  </ul>
+                </div>
+              `).join('')
+            : `<div class="card">No standard Windows API imports were listed in the header.</div>`;
+
+          tabBody = `
+            <div class="card" style="border-color:var(--accent);">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
+                <div style="font-size:11px; font-weight:700; color:var(--accent-text); text-transform:uppercase;">
+                  ✨ Executive Binary Triage & Architecture Summary
+                </div>
+                <div style="display:flex; gap:8px;">
+                  <button class="btn btn-primary" style="padding:4px 10px; font-size:11px;"
+                    onclick="const wm = state.functions.find(f=>f.name==='WinMain')||state.functions[0]; if(wm) state.selectedFunc=wm; state.activeTab='decompile'; render();">
+                    Open WinMain in Decompiler →
+                  </button>
+                  <button class="btn" style="padding:4px 10px; font-size:11px;"
+                    onclick="state.activeTab='disassembly'; render();">
+                    View x86_64 Assembly →
+                  </button>
+                </div>
+              </div>
+              <h3 style="margin:0 0 8px 0; font-size:19px; color:var(--text-primary);">
+                ${escapeHtml(t.name)} — ${escapeHtml(t.plainFormat || t.format)}
+              </h3>
+              <p style="margin:0; font-size:14px; color:var(--text-secondary); line-height:1.6;">
+                ${escapeHtml(t.summary)}
+              </p>
+              <div class="grid" style="margin-top:16px; padding-top:16px; border-top:1px solid var(--border);">
+                <div>
+                  <div style="font-size:11px; color:var(--text-muted);">Entry Point</div>
+                  <div style="font-size:13px; font-weight:700; font-family:monospace; color:var(--accent-text); margin-top:3px;">${escapeHtml(t.entryPoint || '0x140001000')}</div>
+                </div>
+                <div>
+                  <div style="font-size:11px; color:var(--text-muted);">Functions Discovered (.pdata)</div>
+                  <div style="font-size:13px; font-weight:700; margin-top:3px;">${(t.totalFunctionsDiscovered || state.functions.length).toLocaleString()} subroutines</div>
+                </div>
+                <div>
+                  <div style="font-size:11px; color:var(--text-muted);">Imported Windows APIs</div>
+                  <div style="font-size:13px; font-weight:700; margin-top:3px;">${state.imports.length.toLocaleString()} APIs (${t.totalDllsImported || 0} DLLs)</div>
+                </div>
+                <div>
+                  <div style="font-size:11px; color:var(--text-muted);">File Size & Compile Date</div>
+                  <div style="font-size:13px; font-weight:700; margin-top:3px;">${escapeHtml(t.sizeFormatted)} (${escapeHtml(t.compileDate)})</div>
+                </div>
+                <div>
+                  <div style="font-size:11px; color:var(--text-muted);">Packing / Obfuscation</div>
+                  <div style="font-size:13px; font-weight:700; margin-top:3px; color:${t.isPacked ? 'var(--warning)' : 'var(--success)'};">
+                    ${t.isPacked ? '⚠️ Packed / Compressed' : `✅ Unpacked (Entropy ${t.entropy})`}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="grid" style="margin-bottom:18px;">
+              <div class="card" style="cursor:pointer; margin-bottom:0;" onclick="state.stringCategory='Audio, GPU & Engine Clues'; state.activeTab='strings'; render();">
+                <div style="font-size:12px; color:var(--text-muted);">🎛️ Audio, GPU & Engine Clues</div>
+                <div style="font-size:22px; font-weight:800; color:var(--accent-text); margin:6px 0;">${engineCount}</div>
+                <div style="font-size:11px; color:var(--text-dim);">Click to inspect ASIO, CUDA, Direct3D, Codecs →</div>
+              </div>
+              <div class="card" style="cursor:pointer; margin-bottom:0;" onclick="state.stringCategory='Web Link / URL'; state.activeTab='strings'; render();">
+                <div style="font-size:12px; color:var(--text-muted);">🌐 Website Links & Endpoints</div>
+                <div style="font-size:22px; font-weight:800; color:var(--accent); margin:6px 0;">${urlCount}</div>
+                <div style="font-size:11px; color:var(--text-dim);">Click to inspect embedded URLs →</div>
+              </div>
+              <div class="card" style="cursor:pointer; margin-bottom:0;" onclick="state.stringCategory='File Path / System Setting'; state.activeTab='strings'; render();">
+                <div style="font-size:12px; color:var(--text-muted);">📁 File Paths, Registry & DLLs</div>
+                <div style="font-size:22px; font-weight:800; color:var(--success); margin:6px 0;">${pathCount}</div>
+                <div style="font-size:11px; color:var(--text-dim);">Click to inspect file & Registry paths →</div>
+              </div>
+              <div class="card" style="cursor:pointer; margin-bottom:0;" onclick="state.stringCategory='Notable Keyword / Command'; state.activeTab='strings'; render();">
+                <div style="font-size:12px; color:var(--text-muted);">🔑 License, Security & Error Clues</div>
+                <div style="font-size:22px; font-weight:800; color:var(--warning); margin:6px 0;">${keywordCount}</div>
+                <div style="font-size:11px; color:var(--text-dim);">Click to inspect security & license strings →</div>
+              </div>
+            </div>
+
+            <h4 style="margin:18px 0 10px 0; font-size:15px; color:var(--text-primary);">
+              Detected System Capabilities (Derived from ${state.imports.length} Real PE Imports & Sections)
+            </h4>
+            <div class="grid">
+              ${capCards}
+            </div>
+          `;
+        } else if (state.activeTab === 'decompile') {
+          const fn = state.selectedFunc || state.functions[0];
+          const code = fn && fn.decompiled ? fn.decompiled : '// Select a function on the left to decompile';
+          tabBody = `
+            <div class="card" style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+              <div>
+                <div style="font-size:15px; font-weight:700; color:var(--accent-text); margin-bottom:4px;">
+                  ${escapeHtml(fn ? `${fn.name} — ${fn.plainTitle || 'Decompiled Function'}` : 'Function')}
+                </div>
+                <div style="font-size:12.5px; color:var(--text-secondary);">
+                  ${escapeHtml(fn ? fn.plainExplanation : '')}
+                </div>
+              </div>
+              <div style="display:flex; gap:8px;">
+                <button class="btn" onclick="navigator.clipboard.writeText(state.selectedFunc ? state.selectedFunc.decompiled : ''); this.textContent='✅ Copied C!'; setTimeout(()=>render(), 1500);">
+                  📋 Copy Decompiled C
+                </button>
+                <button class="btn btn-primary" onclick="state.activeTab='disassembly'; render();">
+                  🔬 View x86_64 Disassembly →
+                </button>
+              </div>
+            </div>
+            <pre>${escapeHtml(code)}</pre>
+          `;
+        } else if (state.activeTab === 'disassembly') {
+          const fn = state.selectedFunc || state.functions[0];
+          const insns = (fn && fn.disassembly) || [];
+          tabBody = `
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
+              <div>
+                <strong style="font-size:14px; color:var(--text-primary);">x86_64 Disassembly: </strong>
+                <span style="font-family:monospace; color:var(--accent-text); font-weight:700;">${escapeHtml(fn ? `${fn.name} (${fn.address})` : '')}</span>
+                <span style="font-size:12px; color:var(--text-muted); margin-left:10px;">💡 Click any highlighted <code>call</code> or <code>jmp</code> target to follow execution</span>
+              </div>
+              <button class="btn btn-primary" onclick="state.activeTab='decompile'; render();">
+                ⚙️ Switch to Decompiled C
+              </button>
+            </div>
+            <div style="border:1px solid var(--border); border-radius:8px; overflow:auto; max-height:calc(100vh - 200px); background:var(--bg-secondary);">
+              <table style="font-family:Consolas, monospace;">
+                <thead>
+                  <tr>
+                    <th style="width:130px;">Address (VA)</th>
+                    <th style="width:190px;">Instruction Bytes</th>
+                    <th style="width:90px;">Mnemonic</th>
+                    <th>Operands</th>
+                    <th>Cross-Reference / Comment</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${insns.map(insn => {
+                    const isCall = insn.mnemonic === 'call';
+                    const isRet = insn.mnemonic === 'ret';
+                    const isJmp = insn.mnemonic.startsWith('j');
+                    const mnemColor = isCall ? 'var(--warning)' : isRet ? 'var(--danger)' : isJmp ? 'var(--accent-text)' : 'var(--text-primary)';
+                    const opHtml = (insn.flowTarget && (insn.flowType === 'call' || insn.flowType === 'jmp'))
+                      ? `<span class="call-link" onclick="jumpToAddress('${escapeHtml(insn.flowTarget)}')" title="Click to disassemble ${escapeHtml(insn.flowTarget)}">${escapeHtml(insn.operands)}</span>`
+                      : escapeHtml(insn.operands);
+                    return `
+                      <tr>
+                        <td style="color:var(--accent-text); font-weight:600;">${escapeHtml(insn.address)}</td>
+                        <td style="color:var(--text-dim);">${escapeHtml(insn.bytes)}</td>
+                        <td style="color:${mnemColor}; font-weight:700;">${escapeHtml(insn.mnemonic)}</td>
+                        <td style="color:var(--text-primary);">${opHtml}</td>
+                        <td style="color:var(--success);">${insn.comment ? `; ${escapeHtml(insn.comment)}` : ''}</td>
+                      </tr>
+                    `;
+                  }).join('')}
+                </tbody>
+              </table>
+            </div>
+          `;
+        } else if (state.activeTab === 'imports') {
+          const cats = ['ALL', ...Array.from(new Set(state.imports.map(i => i.category || 'System')))];
+          const filteredImp = state.imports.filter(imp => {
+            const catOk = state.importCategory === 'ALL' || imp.category === state.importCategory;
+            const q = state.importSearch.toLowerCase();
+            const qOk = !q || imp.function.toLowerCase().includes(q) || imp.dll.toLowerCase().includes(q) || (imp.plain && imp.plain.toLowerCase().includes(q));
+            return catOk && qOk;
+          });
+          tabBody = `
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:14px;">
+              <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                ${cats.slice(0, 8).map(c => `
+                  <button class="tab ${state.importCategory === c ? 'active' : ''}"
+                    onclick="state.importCategory='${escapeHtml(c)}'; render();">${escapeHtml(c)}</button>
+                `).join('')}
+              </div>
+              <input type="text" placeholder="Search DLL or API (e.g. D3D11, midi, Crypt)..." value="${escapeHtml(state.importSearch)}"
+                oninput="state.importSearch=this.value; render();" style="width:280px;" />
+            </div>
+            <div style="border:1px solid var(--border); border-radius:8px; overflow:auto; max-height:calc(100vh - 210px); background:var(--bg-secondary);">
+              <table>
+                <thead>
+                  <tr>
+                    <th>IAT Address</th>
+                    <th>DLL Library</th>
+                    <th>Function Name</th>
+                    <th>Category</th>
+                    <th>Plain-English Explanation</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${filteredImp.map(imp => `
+                    <tr>
+                      <td style="font-family:Consolas,monospace; color:var(--text-muted);">${escapeHtml(imp.address)}</td>
+                      <td style="color:var(--success); font-family:Consolas,monospace; font-weight:700;">${escapeHtml(imp.dll)}</td>
+                      <td style="color:var(--text-primary); font-family:Consolas,monospace; font-weight:700;">${escapeHtml(imp.function)}</td>
+                      <td style="color:var(--accent-text); font-weight:600;">${escapeHtml(imp.category)}</td>
+                      <td style="color:var(--text-secondary);">${escapeHtml(imp.plain)}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          `;
+        } else if (state.activeTab === 'strings') {
+          const filtered = state.strings.filter(s => {
+            const catOk = state.stringCategory === 'ALL' || s.section === state.stringCategory;
+            const q = state.stringSearch.toLowerCase();
+            const searchOk = !q || s.value.toLowerCase().includes(q) || s.section.toLowerCase().includes(q) || s.offset.toLowerCase().includes(q);
+            return catOk && searchOk;
+          });
+          tabBody = `
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:14px;">
+              <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                ${[
+                  ['ALL', `All Strings (${state.strings.length})`],
+                  ['Audio, GPU & Engine Clues', `🎛️ Audio, GPU & Engine (${engineCount})`],
+                  ['Web Link / URL', `🌐 Website Links (${urlCount})`],
+                  ['File Path / System Setting', `📁 File Paths (${pathCount})`],
+                  ['Notable Keyword / Command', `🔑 Security & Keywords (${keywordCount})`],
+                ].map(([id, label]) => `
+                  <button class="tab ${state.stringCategory === id ? 'active' : ''}"
+                    onclick="state.stringCategory='${id}'; render();">${label}</button>
+                `).join('')}
+              </div>
+              <input type="text" placeholder="Filter strings (e.g. asio, cuda, http, license)..." value="${escapeHtml(state.stringSearch)}"
+                oninput="state.stringSearch=this.value; render();" style="width:260px;" />
+            </div>
+            <div style="border:1px solid var(--border); border-radius:8px; overflow:auto; max-height:calc(100vh - 210px); background:var(--bg-secondary);">
+              <table>
+                <thead>
+                  <tr>
+                    <th style="width:105px;">RVA Offset</th>
+                    <th style="width:85px;">Encoding</th>
+                    <th style="width:190px;">Category</th>
+                    <th>String Value</th>
+                    <th>Plain-English Meaning</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${filtered.map(s => `
+                    <tr>
+                      <td style="font-family:Consolas,monospace; color:var(--text-muted);">${escapeHtml(s.offset)}</td>
+                      <td style="font-family:Consolas,monospace; color:var(--text-dim);">${escapeHtml(s.type)}</td>
+                      <td style="color:var(--accent-text); font-weight:600; white-space:nowrap;">${escapeHtml(s.section)}</td>
+                      <td style="font-family:Consolas,monospace; color:var(--text-primary); word-break:break-all;">${escapeHtml(s.value)}</td>
+                      <td style="color:var(--text-muted);">${escapeHtml(s.plain)}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          `;
+        } else if (state.activeTab === 'sections') {
+          const secs = t.sectionDetails || [];
+          const exps = t.exports || [];
+          tabBody = `
+            <h4 style="margin:0 0 10px 0; font-size:15px; color:var(--text-primary);">PE Memory Sections (${secs.length})</h4>
+            <div style="border:1px solid var(--border); border-radius:8px; overflow:hidden; background:var(--bg-secondary); margin-bottom:20px;">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Section Name</th>
+                    <th>Virtual Address</th>
+                    <th>Virtual Size</th>
+                    <th>Raw File Offset</th>
+                    <th>Raw Size</th>
+                    <th>Section Purpose</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${secs.map(sec => `
+                    <tr>
+                      <td style="font-family:Consolas,monospace; font-weight:700; color:var(--accent-text);">${escapeHtml(sec.name)}</td>
+                      <td style="font-family:Consolas,monospace; color:var(--text-primary);">${escapeHtml(sec.address)}</td>
+                      <td style="font-family:Consolas,monospace; color:var(--text-secondary);">${(sec.vSize || 0).toLocaleString()} B</td>
+                      <td style="font-family:Consolas,monospace; color:var(--text-muted);">0x${(sec.rawPtr || 0).toString(16).toUpperCase()}</td>
+                      <td style="font-family:Consolas,monospace; color:var(--text-secondary);">${(sec.rawSize || 0).toLocaleString()} B</td>
+                      <td style="color:var(--text-secondary);">
+                        ${sec.name === '.text' ? 'Executable x86_64 machine instructions'
+                          : sec.name === '.rdata' || sec.name === '.rodata' ? 'Read-only constants, strings, and Import/Export tables'
+                          : sec.name === '.data' ? 'Initialized global and static variables'
+                          : sec.name === '.pdata' ? 'x64 Exception Unwind directory (maps every function boundary)'
+                          : sec.name === '.rsrc' ? 'Embedded UI skins, icons, audio samples, and visual resources'
+                          : sec.name.toLowerCase().includes('nv') ? 'NVIDIA CUDA GPU Fatbin kernels (AI Stem separation / DSP)'
+                          : sec.name === '.reloc' ? 'ASLR base relocation table'
+                          : 'Application runtime section'}
+                      </td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+            ${exps.length > 0 ? `
+              <h4 style="margin:0 0 10px 0; font-size:15px; color:var(--text-primary);">Exported Symbols (${exps.length})</h4>
+              <div style="border:1px solid var(--border); border-radius:8px; overflow:hidden; background:var(--bg-secondary);">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Export Name</th>
+                      <th>Virtual Address</th>
+                      <th>Inspect</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${exps.map(ex => `
+                      <tr>
+                        <td style="font-family:Consolas,monospace; font-weight:700; color:var(--success);">${escapeHtml(ex.name)}</td>
+                        <td style="font-family:Consolas,monospace; color:var(--accent-text);">${escapeHtml(ex.address)}</td>
+                        <td><button class="btn btn-primary" style="padding:3px 10px; font-size:11px;" onclick="jumpToAddress('${escapeHtml(ex.address)}')">Decompile Export</button></td>
+                      </tr>
+                    `).join('')}
+                  </tbody>
+                </table>
+              </div>
+            ` : ''}
+          `;
+        } else if (state.activeTab === 'hex') {
+          tabBody = `
+            <p style="margin:0 0 12px 0; font-size:13px; color:var(--text-muted);">
+              First 1,024 raw bytes of <strong>${escapeHtml(t.name)}</strong> (PE / MZ Header & DOS Stub):
+            </p>
+            <pre style="color:#67e8f9;">${escapeHtml(t.hexPreview)}</pre>
+          `;
+        }
+
+        mainHtml = `
+          <div class="workspace">
+            <aside class="sidebar">
+              <div style="padding:12px 14px; border-bottom:1px solid var(--border);">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                  <span style="font-size:10px; font-weight:700; color:var(--accent-text); text-transform:uppercase;">Active Binary</span>
+                  <span style="font-size:11px; color:var(--text-muted); font-family:monospace;">Base: ${escapeHtml(t.imageBase || '0x140000000')}</span>
+                </div>
+                <div style="font-size:14px; font-weight:700; color:var(--text-primary); margin-top:4px; word-break:break-all;">${escapeHtml(t.name)}</div>
+                <div style="font-size:12px; color:var(--text-muted); margin-top:3px;">${escapeHtml(t.format)} • ${escapeHtml(t.sizeFormatted)}</div>
+              </div>
+
+              <div style="padding:8px 12px; border-bottom:1px solid var(--border); background:var(--bg-tertiary);">
+                <div style="font-size:10px; font-weight:700; color:var(--text-muted); text-transform:uppercase; margin-bottom:5px;">
+                  Disassemble Any Address (VA / RVA)
+                </div>
+                <div style="display:flex; gap:6px;">
+                  <input type="text" placeholder="e.g. 0x14151A390" style="flex:1; font-family:monospace;"
+                    value="${escapeHtml(state.customAddress)}"
+                    oninput="state.customAddress=this.value"
+                    onkeydown="if(event.key==='Enter') jumpToAddress(this.value)" />
+                  <button class="btn btn-primary" style="padding:4px 10px;" onclick="jumpToAddress()">Decode</button>
+                </div>
+              </div>
+
+              <div style="padding:8px 12px; border-bottom:1px solid var(--border);">
+                <input type="text" placeholder="Filter functions or addresses..." style="width:100%;"
+                  value="${escapeHtml(state.funcFilter)}"
+                  oninput="state.funcFilter=this.value; render();" />
+              </div>
+
+              <div style="padding:8px 12px; font-size:11px; font-weight:700; color:var(--text-muted); text-transform:uppercase; border-bottom:1px solid var(--border); display:flex; justify-content:space-between;">
+                <span>Symbol Tree (${filteredFns.length})</span>
+                <span style="color:var(--accent-text); font-size:10px;">${(t.totalFunctionsDiscovered || state.functions.length).toLocaleString()} total</span>
+              </div>
+
+              <div style="flex:1; overflow-y:auto;">
+                ${filteredFns.map((fn) => `
+                  <div class="fn-item ${state.selectedFunc && state.selectedFunc.address === fn.address ? 'active' : ''}"
+                    onclick="state.selectedFunc = state.functions.find(f=>f.address==='${escapeHtml(fn.address)}'); if(state.activeTab!=='disassembly' && state.activeTab!=='decompile') state.activeTab = 'decompile'; render();">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                      <span style="font-size:12.5px; font-weight:700; font-family:Consolas,monospace; color:${state.selectedFunc && state.selectedFunc.address === fn.address ? 'var(--accent-text)' : 'var(--text-primary)'};">${escapeHtml(fn.name)}</span>
+                      <span style="font-size:10px; font-family:Consolas,monospace; color:var(--text-muted); background:var(--bg-tertiary); padding:1px 5px; border-radius:4px;">${escapeHtml(fn.address)}</span>
+                    </div>
+                    <div style="font-size:11px; color:var(--text-muted); margin-top:3px; display:flex; justify-content:space-between;">
+                      <span>${escapeHtml(fn.plainTitle || fn.category || 'Subroutine')}</span>
+                      <span>${fn.size} B</span>
+                    </div>
+                  </div>
+                `).join('')}
+              </div>
+            </aside>
+            <main class="main">
+              <div class="tabs">
+                ${[
+                  ['overview', '✨ 1. Overview (Plain English)'],
+                  ['decompile', '⚙️ 2. Ghidra C Decompiler'],
+                  ['disassembly', `🔬 3. x86_64 Disassembly (${(state.selectedFunc && state.selectedFunc.disassembly && state.selectedFunc.disassembly.length) || 0})`],
+                  ['imports', `🔌 4. Imported APIs (${state.imports.length})`],
+                  ['strings', `🔍 5. Strings (${state.strings.length})`],
+                  ['sections', `📦 6. PE Sections (${(t.sectionDetails && t.sectionDetails.length) || 0})`],
+                  ['hex', '🔢 7. Raw Hex'],
+                ].map(([id, label]) => `
+                  <button class="tab ${state.activeTab === id ? 'active' : ''}"
+                    onclick="state.activeTab='${id}'; render();">${label}</button>
+                `).join('')}
+              </div>
+              <div class="content">${tabBody}</div>
+              <footer>
+                <div>SHA-256: <span style="color:var(--text-primary); font-family:Consolas,monospace;">${escapeHtml((t.hashes && t.hashes.sha256 || '').slice(0, 32))}...</span> &nbsp;|&nbsp; Entry: <span style="color:var(--accent-text); font-family:Consolas,monospace;">${escapeHtml(t.entryPoint || '')}</span></div>
+                <div style="color:var(--success); font-weight:600;">● Ghidra Static Decompiler Ready (Safe Read-Only Mode)</div>
+              </footer>
+            </main>
+          </div>
+        `;
+      }
+
+      let modalHtml = '';
+      if (state.showUpdateModal) {
+        const isBusy = state.updateState === 'checking' || state.updateState === 'downloading';
+        const releaseDateText = state.updateInfo && state.updateInfo.releaseDate
+          ? new Date(state.updateInfo.releaseDate).toLocaleDateString()
+          : '';
+        const newVersionText = (state.updateInfo && state.updateInfo.version) || state.appVersion;
+        modalHtml = `
+          <div class="modal-backdrop">
+            <div class="modal">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                <h3 style="margin:0; font-size:16px; color:var(--text-primary);">🔄 Built-in Patch Updater</h3>
+                <button class="btn" style="padding:4px 8px;" onclick="state.showUpdateModal=false; render();">✕</button>
+              </div>
+              <div style="font-size:12px; color:var(--text-muted); margin-bottom:14px;">
+                Installed: <strong style="color:var(--text-primary);">v${escapeHtml(state.appVersion)}</strong> &bull; Repo: <code>iammrwrath/AegisRE</code>
+              </div>
+              ${state.hasConfiguredToken ? `
+                <div style="background:rgba(34,197,94,0.12); border:1px solid rgba(34,197,94,0.3); border-radius:8px; padding:10px 12px; margin-bottom:16px; font-size:12px; color:var(--success);">
+                  ✅ GitHub Update Token loaded from <code>%APPDATA%\\AegisRE\\config.json</code>
+                </div>
+              ` : `
+                <div style="margin-bottom:16px;">
+                  <div style="font-size:12px; color:var(--text-muted); margin-bottom:8px; line-height:1.5;">
+                    Checks <code>iammrwrath/AegisRE</code> for new releases and patches automatically.
+                  </div>
+                  <input type="password" placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
+                    style="width:100%;" value="${escapeHtml(state.ghToken)}"
+                    oninput="state.ghToken=this.value" />
+                </div>
+              `}
+              ${state.updateState === 'checking' ? `
+                <div style="background:var(--accent-soft); border:1px solid var(--accent-text); border-radius:8px; padding:12px; margin-bottom:16px; font-size:12px; color:var(--accent-text);">
+                  ⏳ Checking <code>iammrwrath/AegisRE</code> on GitHub for new releases and patches...
+                </div>
+              ` : ''}
+              ${state.updateState === 'available' ? `
+                <div style="background:var(--accent-soft); border:1px solid var(--accent-text); border-radius:8px; padding:12px; margin-bottom:16px; font-size:12px; color:var(--text-primary);">
+                  <div style="font-weight:700; color:var(--accent); margin-bottom:4px;">
+                    🎉 New Update Available: v${escapeHtml(newVersionText)}
+                  </div>
+                  <div style="color:var(--text-secondary);">
+                    Current: v${escapeHtml(state.appVersion)}${state.updateInfo && state.updateInfo.name ? ` &bull; ${escapeHtml(state.updateInfo.name)}` : ''}${releaseDateText ? ` (${escapeHtml(releaseDateText)})` : ''}
+                  </div>
+                </div>
+              ` : ''}
+              ${state.updateState === 'downloading' ? `
+                <div style="background:var(--bg-tertiary); border:1px solid var(--border-strong); border-radius:8px; padding:12px; margin-bottom:16px; font-size:12px; color:var(--text-secondary);">
+                  <div style="margin-bottom:8px;">⬇️ Downloading &amp; applying patch... ${state.downloadProgress || 0}%</div>
+                  <div style="width:100%; height:8px; background:var(--bg-primary); border-radius:999px; overflow:hidden; border:1px solid var(--border);">
+                    <div style="width:${Math.min(100, Math.max(0, state.downloadProgress || 0))}%; height:100%; background:var(--accent-bg); transition:width 0.2s ease;"></div>
+                  </div>
+                </div>
+              ` : ''}
+              ${state.updateState === 'downloaded' ? `
+                <div style="background:rgba(34,197,94,0.12); border:1px solid rgba(34,197,94,0.3); border-radius:8px; padding:12px; margin-bottom:16px; font-size:12px; color:var(--success);">
+                  ✅ Update to v${escapeHtml(newVersionText)} applied! Restart to load the new version.
+                </div>
+              ` : ''}
+              ${state.updateState === 'not-available' ? `
+                <div style="background:rgba(34,197,94,0.1); border:1px solid rgba(34,197,94,0.28); border-radius:8px; padding:12px; margin-bottom:16px; font-size:12px; color:var(--success);">
+                  ✅ You are running the latest version of AegisRE Studio (v${escapeHtml(state.appVersion)}).
+                </div>
+              ` : ''}
+              ${state.updateState === 'error' ? `
+                <div style="background:rgba(239,68,68,0.12); border:1px solid rgba(239,68,68,0.3); border-radius:8px; padding:12px; margin-bottom:16px; font-size:12px; color:var(--danger);">
+                  ⚠️ ${escapeHtml(state.updateError)}
+                </div>
+              ` : ''}
+              <div style="display:flex; justify-content:flex-end; gap:8px;">
+                <button class="btn" onclick="state.showUpdateModal=false; render();">Close</button>
+                ${state.updateState === 'available' ? `
+                  <button class="btn btn-primary" onclick="downloadUpdate()">⬇️ Download &amp; Apply Update</button>
+                ` : state.updateState === 'downloaded' ? `
+                  <button class="btn btn-success" onclick="installUpdate()">🚀 Restart to Apply</button>
+                ` : `
+                  <button class="btn btn-primary" ${isBusy ? 'disabled style="opacity:0.65; cursor:not-allowed;"' : ''} onclick="checkForUpdates()">
+                    ${isBusy ? '⏳ Checking...' : '🔄 Check Now'}
+                  </button>
+                `}
+              </div>
+            </div>
+          </div>
+        `;
+      }
+
+      root.innerHTML = `
+        <header>
+          <div class="brand">
+            <div class="logo">🛡️</div>
+            <span style="font-weight:800; font-size:14px; letter-spacing:0.04em;">AEGIS<span style="color:var(--accent);">RE</span> STUDIO</span>
+            <span class="badge">Ghidra Decompiler Engine • v${escapeHtml(state.appVersion)}</span>
+          </div>
+          <div class="no-drag" style="display:flex; gap:8px;">
+            ${t ? `<button class="btn" onclick="state.target=null; render();">← Home</button>` : ''}
+            <button class="btn" onclick="toggleTheme()" title="Switch between Dark and Light theme">
+              ${state.theme === 'dark' ? '☀️ Light Mode' : '🌙 Dark Mode'}
+            </button>
+            <button class="btn" onclick="state.showUpdateModal=true; render();">
+              🔄 Updates ${state.hasConfiguredToken ? '<span style="color:var(--success);">●</span>' : ''}
+            </button>
+            <button class="btn btn-primary" onclick="pickFile()">📂 Open Binary / App</button>
+          </div>
+        </header>
+        ${state.error ? `<div style="background:rgba(239,68,68,0.18); border-bottom:1px solid rgba(239,68,68,0.4); padding:10px 20px; color:var(--danger); font-size:13px; display:flex; justify-content:space-between;"><span>⚠️ ${escapeHtml(state.error)}</span><span style="cursor:pointer;" onclick="state.error=''; render();">✕</span></div>` : ''}
+        ${mainHtml}
+        ${modalHtml}
+      `;
+    }
+
+    render();
+  </script>
+</body>
+</html>

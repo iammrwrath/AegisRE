@@ -92,9 +92,11 @@ declare global {
       getTheme?: () => Promise<'dark' | 'light'>;
       setTheme?: (theme: 'dark' | 'light') => Promise<{ success: boolean; theme: 'dark' | 'light' }>;
       getVersion?: () => Promise<string>;
-      checkForUpdates?: (token?: string) => Promise<{ success: boolean; updateInfo?: any; error?: string }>;
+      checkForUpdates?: (
+        token?: string
+      ) => Promise<{ success: boolean; status?: string; updateInfo?: any; error?: string }>;
       hasConfiguredToken?: () => Promise<boolean>;
-      downloadUpdate?: () => Promise<{ success: boolean; error?: string }>;
+      downloadUpdate?: () => Promise<{ success: boolean; version?: string; error?: string }>;
       installUpdate?: () => void;
       onUpdaterStatus?: (callback: (payload: { status: string; data: any }) => void) => () => void;
       platform: string;
